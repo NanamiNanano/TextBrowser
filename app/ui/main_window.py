@@ -6,7 +6,7 @@
   * 四边四角放透明「抓取条」，按下时走 startSystemResize()，由系统负责缩放；
   * 最大化时隐藏抓取条，避免和系统边框打架。
 """
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QStackedWidget,
                                QTextEdit, QVBoxLayout, QWidget)
@@ -16,8 +16,10 @@ from ..core.paginate import Page
 from ..core.settings import Settings
 from .bookshelf import BookshelfView
 from .reader import ReaderView
+from .search_panel import SearchPanel
 from .theme import build_qss, ui_colors
 from .titlebar import TitleBar
+from .toc_panel import TocPanel
 from .tray import Tray
 
 GRIP = 6
@@ -71,7 +73,21 @@ class MainWindow(QWidget):
         self.reader = ReaderView(settings, library, self)
         self.stack.addWidget(self.shelf)
         self.stack.addWidget(self.reader)
-        root.addWidget(self.stack, 1)
+
+        # 正文区 + 右侧栏（目录 / 搜索共用，默认收起）
+        self.toc = TocPanel(self)
+        self.search = SearchPanel(self)
+        self.side = QStackedWidget(self)
+        self.side.addWidget(self.toc)
+        self.side.addWidget(self.search)
+        self.side.setVisible(False)
+        content = QWidget(self)
+        content_lay = QHBoxLayout(content)
+        content_lay.setContentsMargins(0, 0, 0, 0)
+        content_lay.setSpacing(0)
+        content_lay.addWidget(self.stack, 1)
+        content_lay.addWidget(self.side)
+        root.addWidget(content, 1)
 
         # 托盘
         self.tray = Tray(lambda: self.library.list_books(), self)
@@ -88,6 +104,10 @@ class MainWindow(QWidget):
         self.shelf.sig_status.connect(self.show_status)
         self.reader.sig_status.connect(self.show_status)
         self.reader.sig_progress.connect(self._on_progress)
+        self.toc.sig_jump.connect(self._on_toc_jump)
+        self.toc.sig_close.connect(self.close_side)
+        self.search.sig_jump.connect(self._on_search_jump)
+        self.search.sig_close.connect(self.close_side)
 
         # 缩放抓取条
         self._grips = []
@@ -240,20 +260,88 @@ class MainWindow(QWidget):
         if self.reader.open_book(book):
             self.stack.setCurrentWidget(self.reader)
             self.titlebar.set_title(book["title"])
+            self.toc.clear()
+            self.search.set_target(None, [])
+            self.reader.clear_search_hits()
+            # 目录延后到首帧之后加载：100 MB TXT 首次识别约 170 ms，
+            # 不该挡在第一页显示之前；二次打开走缓存，几乎无感。
+            QTimer.singleShot(40, self._load_toc)
         else:
             self.shelf.refresh()
+
+    # ------------------------------------------------------------ 侧栏
+    def _side_showing(self, panel) -> bool:
+        return self.side.isVisible() and self.side.currentWidget() is panel
+
+    def open_side(self, panel) -> None:
+        self.side.setCurrentWidget(panel)
+        self.side.setVisible(True)
+
+    def close_side(self) -> None:
+        self.side.setVisible(False)
+        self.reader.setFocus()
+
+    def toggle_toc(self):
+        if self._side_showing(self.toc):
+            self.close_side()
+            return
+        self._load_toc()
+        self.open_side(self.toc)
+        self.toc.highlight_offset(self.reader.page.start)
+        self.reader.setFocus()
+
+    def toggle_search(self):
+        if self._side_showing(self.search):
+            self.close_side()
+            return
+        self._load_toc()                 # 结果里要显示章节名，需要章节表
+        self.open_side(self.search)
+        self.search.focus_input()
+
+    def _load_toc(self):
+        """载入（必要时现场识别）当前书的章节，同步给阅读视图、目录与搜索。"""
+        book = self.reader.book
+        if not book:
+            self.toc.clear()
+            self.search.set_target(None, [])
+            return
+        chapters = self.library.ensure_chapters(book)
+        self.reader.set_chapters(chapters)
+        self.toc.set_chapters(chapters)
+        self.toc.highlight_offset(self.reader.page.start)
+        self.search.set_target(self.reader.tf, chapters)
+        if not chapters and self.side.currentWidget() is self.toc and self.side.isVisible():
+            self.show_status("未识别到章节，可能是文件命名没有规律")
+
+    def _on_toc_jump(self, offset: int):
+        if self.reader.tf is None:
+            return
+        self.reader.goto_offset(offset)
+        self.reader.setFocus()
+
+    def _on_search_jump(self, offset: int, length: int):
+        if self.reader.tf is None:
+            return
+        hits = [(h.offset, h.length) for h in self.search.current_hits()]
+        self.reader.set_search_hits(hits, current=(offset, length))
+        self.reader.goto_offset(offset, align_line=True)
+        self.reader.setFocus()
 
     def back_to_shelf(self):
         self.reader.close_book()
         self.stack.setCurrentWidget(self.shelf)
         self.titlebar.set_title("")
+        self.toc.clear()
+        self.search.set_target(None, [])
+        self.close_side()
         self.shelf.refresh()
 
     def show_status(self, text: str):
         self.setWindowTitle("%s —— %s" % (APP_DISPLAY_NAME, text) if text else APP_DISPLAY_NAME)
 
     def _on_progress(self, offset: int, pct: float):
-        pass
+        if self._side_showing(self.toc):
+            self.toc.highlight_offset(offset)
 
     # ------------------------------------------------------------ 快捷键
     _INPUT_TYPES = (QLineEdit, QTextEdit)
@@ -281,6 +369,16 @@ class MainWindow(QWidget):
             return
         if ctrl and k == Qt.Key.Key_W:
             self.back_to_shelf()
+            ev.accept()
+            return
+        if ctrl and k == Qt.Key.Key_T:
+            if in_reader:
+                self.toggle_toc()
+            ev.accept()
+            return
+        if ctrl and k == Qt.Key.Key_F:
+            if in_reader:
+                self.toggle_search()
             ev.accept()
             return
 

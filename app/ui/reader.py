@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""阅读视图：分页渲染、Q/E 翻页、进度保存。"""
+"""阅读视图：分页渲染、Q/E 翻页、进度保存、搜索高亮。"""
 import time
+from bisect import bisect_left, bisect_right
 
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import QWidget
 
 from ..core.paginate import Layout, Page, Paginator
@@ -32,6 +33,13 @@ class ReaderView(QWidget):
         self._history = []
         self._last_save = 0.0
         self._page_no = 1
+        # 章节表：偏移数组供二分定位当前章节，标题数组按下标取
+        self._chap_offsets = []
+        self._chap_titles = []
+        # 搜索命中：[(字节偏移, 字节长度)]，按偏移升序
+        self._hits = []
+        self._hit_offsets = []
+        self._current_hit = None
 
     # ------------------------------------------------------------ 生命周期
     def open_book(self, book: dict) -> bool:
@@ -70,6 +78,11 @@ class ReaderView(QWidget):
         self.book = None
         self.page = Page("", 0, 0, 0)
         self._history.clear()
+        self._chap_offsets = []
+        self._chap_titles = []
+        self._hits = []
+        self._hit_offsets = []
+        self._current_hit = None
 
     # ------------------------------------------------------------ 版式
     def _make_layout(self) -> Layout:
@@ -102,6 +115,50 @@ class ReaderView(QWidget):
         start = self.page.start if offset is None else offset
         self.pg = Paginator(self.tf, layout or self._make_layout())
         self.page = self.pg.layout_page(start)
+        self._refresh_highlights()
+
+    # ------------------------------------------------------------ 搜索高亮
+    def set_search_hits(self, hits, current=None) -> None:
+        """hits: [(字节偏移, 字节长度)]，按偏移升序；current 为当前跳转到的命中。"""
+        self._hits = list(hits or ())
+        self._hit_offsets = [h[0] for h in self._hits]
+        self._current_hit = current
+        self._refresh_highlights()
+
+    def clear_search_hits(self) -> None:
+        self.set_search_hits([], None)
+
+    def _refresh_highlights(self) -> None:
+        """把落在当前页内的命中换算成页内字符区间，交给分页器上色。"""
+        if self.pg is None or self.page.is_empty:
+            return
+        if not self._hits:
+            self.pg.set_highlights([], None)
+            return
+
+        enc = self.tf.encoding or "utf-8"
+        pstart, pend = self.page.start, self.page.end
+        i = bisect_left(self._hit_offsets, pstart)
+        j = bisect_left(self._hit_offsets, pend)
+
+        ranges = []
+        current = None
+        for off, length in self._hits[i:j]:
+            if off + length > pend:
+                continue
+            try:
+                prefix = self.tf.read_bytes(pstart, off - pstart).decode(enc, "ignore")
+                body = self.tf.read_bytes(off, length).decode(enc, "ignore")
+            except LookupError:
+                continue
+            s = len(prefix)
+            e = s + len(body)
+            if e <= s:
+                continue
+            ranges.append((s, e))
+            if self._current_hit is not None and self._current_hit[0] == off:
+                current = (s, e)
+        self.pg.set_highlights(ranges, current)
 
     def apply_appearance(self) -> None:
         """外观设置变化后重新分页，保持当前位置（字节偏移不变）。"""
@@ -152,14 +209,44 @@ class ReaderView(QWidget):
         self._after_turn()
         return True
 
-    def goto_offset(self, offset: int) -> None:
+    # ------------------------------------------------------------ 章节
+    def set_chapters(self, chapters) -> None:
+        """chapters: [{'start_off': int, 'title': str, ...}]，按 start_off 升序。"""
+        self._chap_offsets = [int(c["start_off"]) for c in chapters]
+        self._chap_titles = [c["title"] for c in chapters]
+        self.update()
+
+    def current_chapter_index(self) -> int:
+        if not self._chap_offsets or self.tf is None:
+            return -1
+        return bisect_right(self._chap_offsets, self.page.start) - 1
+
+    def current_chapter_title(self):
+        i = self.current_chapter_index()
+        if 0 <= i < len(self._chap_titles):
+            return self._chap_titles[i]
+        return None
+
+    def goto_offset(self, offset: int, align_line: bool = False) -> None:
+        """跳到指定字节偏移。
+
+        align_line=True 时回退到该偏移所在行的行首：搜索命中常常落在句子中间，
+        直接从命中处开头会把半句话切在页顶，看不出上下文。只有在本行不太长时
+        才回退，否则命中会被推到页外去。
+        """
         if self.tf is None:
             return
+        offset = max(0, min(offset, self.tf.size - 1))
+        if align_line:
+            line_start = self.tf.line_start(self.tf.line_of_offset(offset))
+            if offset - line_start <= 400:
+                offset = line_start
         self._history.clear()
-        self.page = self.pg.layout_page(max(0, min(offset, self.tf.size - 1)))
+        self.page = self.pg.layout_page(offset)
         self._after_turn()
 
     def _after_turn(self) -> None:
+        self._refresh_highlights()      # 换页后命中集合变了，要重新上色
         self.update()
         pct = self.percent()
         self.sig_progress.emit(self.page.start, pct)
@@ -208,10 +295,19 @@ class ReaderView(QWidget):
             f = QFont("Microsoft YaHei")
             f.setPixelSize(11)
             p.setFont(f)
-            left = "第 %d 页" % self._page_no
-            right = "%.1f%%  ·  %s 字/页" % (self.percent(), format(self.page.chars, ","))
+            right = "第 %d 页  ·  %.1f%%" % (self._page_no, self.percent())
             rect = QRectF(col_x, fy + 6, lay.width, FOOTER_H - 12)
-            p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), left)
+            fm = QFontMetrics(f)
+
+            # 左边放当前章节名，右边固定放页码/进度；章节名过长就省略，
+            # 并给右边预留宽度，避免两边文字撞在一起。
+            chapter = self.current_chapter_title()
+            if chapter:
+                reserved = fm.horizontalAdvance(right) + 24
+                left = fm.elidedText(chapter, Qt.TextElideMode.ElideMiddle,
+                                     max(40, int(lay.width - reserved)))
+                p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), left)
+
             p.drawText(rect, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), right)
 
     # ------------------------------------------------------------ 输入

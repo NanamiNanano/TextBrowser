@@ -208,6 +208,116 @@ def t_gbk():
 
 check("GBK 文件缩放正常", t_gbk)
 
+print("\n== 7. 目录侧栏 ==")
+
+
+def t_toc_load():
+    books = [b for b in library.list_books() if b["id"] == bid]
+    win.open_book(bid)
+    app.processEvents()
+    win._load_toc()                      # 直接调用，绕过 QTimer
+    app.processEvents()
+    assert reader._chap_offsets, "章节没加载进阅读视图"
+    assert win.toc.list.count() > 1000, "侧栏条目太少：%d" % win.toc.list.count()
+    return "%d 章已载入" % len(reader._chap_offsets)
+
+
+def t_toc_locate():
+    chapters = library.list_chapters(bid)
+    target = chapters[100]
+    reader.goto_offset(int(target["start_off"]))
+    app.processEvents()
+    assert reader.current_chapter_title() == target["title"], \
+        "定位到第 101 章后当前章节是 %r，期望 %r" % (
+            reader.current_chapter_title(), target["title"])
+    assert_visible(reader, "(跳章后)")
+    return "跳到「%s」并正确高亮" % target["title"][:16]
+
+
+def t_toc_toggle():
+    win.toggle_toc()
+    app.processEvents()
+    assert win.toc.isVisible(), "Ctrl+T 没有展开目录"
+    win.toc.highlight_offset(reader.page.start)
+    app.processEvents()
+    row = win.toc.list.currentRow()
+    assert row > 0, "侧栏没有选中当前章节，row=%d" % row
+    win.toggle_toc()
+    app.processEvents()
+    assert not win.toc.isVisible(), "再次 Ctrl+T 没有收起"
+    return "展开/收起/高亮正常（row=%d）" % row
+
+
+def t_toc_jump():
+    chapters = library.list_chapters(bid)
+    target = chapters[250]
+    win._on_toc_jump(int(target["start_off"]))
+    app.processEvents()
+    assert reader.page.start == int(target["start_off"]), "跳转没落到章节起点"
+    assert_visible(reader, "(侧栏跳转后)")
+    return "侧栏跳转到「%s」" % target["title"][:16]
+
+
+check("加载目录", t_toc_load)
+check("按章节定位", t_toc_locate)
+check("侧栏展开/收起", t_toc_toggle)
+check("侧栏跳转", t_toc_jump)
+
+print("\n== 8. 搜索与页内高亮 ==")
+
+
+def t_search_panel():
+    win.toggle_search()
+    app.processEvents()
+    assert win.side.isVisible(), "搜索侧栏没有展开"
+    assert win.side.currentWidget() is win.search, "侧栏没有切到搜索页"
+    win.search.input.setText("长夜将至")
+    win.search.run_search()
+    app.processEvents()
+    hits = win.search.current_hits()
+    assert hits, "没搜到「长夜将至」"
+    assert win.search.list.count() > 0, "结果列表是空的"
+    return "%s，列表 %d 行" % (win.search.lbl_status.text(), win.search.list.count())
+
+
+def t_search_jump():
+    hits = win.search.current_hits()
+    target = hits[min(5, len(hits) - 1)]
+    win._on_search_jump(target.offset, target.length)
+    app.processEvents()
+    assert reader.page.start <= target.offset < reader.page.end, \
+        "跳转后命中不在当前页内：%d 不在 %d..%d" % (target.offset, reader.page.start, reader.page.end)
+    assert_visible(reader, "(搜索跳转后)")
+    return "跳到偏移 %d（页内）" % target.offset
+
+
+def t_highlight():
+    ranges = getattr(reader.pg, "_highlights", [])
+    assert ranges, "命中区间上的高亮一个都没有"
+    kw = "长夜将至"
+    texts = [reader.page.text[s:e] for s, e in ranges]
+    assert kw in texts, "高亮区间取出来的文字不是关键词：%r" % texts[:3]
+    # 当前命中应使用更重的底色（被记在 _highlight_current 里）
+    assert reader.pg._highlight_current is not None, "当前命中没有单独标记"
+    return "%d 处高亮，其中当前命中已强调" % len(ranges)
+
+
+def t_highlight_cleared():
+    chapters = library.list_chapters(bid)
+    win._on_toc_jump(int(chapters[3]["start_off"]))
+    app.processEvents()
+    # 跳到没有命中的章节后，高亮应该消失（否则整本书都挂着色块）
+    ranges = getattr(reader.pg, "_highlights", [])
+    assert not ranges, "离开命中区后仍有 %d 处高亮" % len(ranges)
+    assert_visible(reader, "(离开命中区后)")
+    return "离开命中区后高亮正确清除"
+
+
+check("搜索面板出结果", t_search_panel)
+check("点击结果跳转", t_search_jump)
+check("页内高亮命中", t_highlight)
+check("离开命中区清除高亮", t_highlight_cleared)
+
 win.hide()
 library.close()
 

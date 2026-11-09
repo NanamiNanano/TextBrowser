@@ -98,6 +98,18 @@ class Paginator:
         if getattr(self, "_page_text", None) is not None:
             self._apply(self._page_text)
 
+    # ------------------------------------------------------------ 高亮
+    def set_highlights(self, ranges=None, current=None) -> None:
+        """给页面文本的若干字符区间加底色（搜索命中）。
+
+        ranges 是「页内字符下标」区间 [(start, end)]，不是字节偏移——字节到字符
+        的换算由调用方做，因为只有它知道本页起点。
+        """
+        self._highlights = list(ranges or ())
+        self._highlight_current = current
+        if getattr(self, "_page_text", None) is not None:
+            self._apply(self._page_text)
+
     # ------------------------------------------------------------ 排版
     def _apply(self, text: str) -> None:
         d = self.doc
@@ -112,6 +124,23 @@ class Paginator:
         cf = QTextCharFormat()
         cf.setForeground(self._color)
         cur.mergeCharFormat(cf)
+
+        # 命中区间用半透明底色，深浅主题下都不会盖住文字
+        n = len(text)
+        for rng in getattr(self, "_highlights", ()):
+            s = max(0, min(int(rng[0]), n))
+            e = max(0, min(int(rng[1]), n))
+            if e <= s:
+                continue
+            hf = QTextCharFormat()
+            is_cur = self._highlight_current == (s, e)
+            hf.setBackground(QColor(255, 168, 0, 150) if is_cur
+                             else QColor(255, 214, 64, 110))
+            hc = QTextCursor(d)
+            hc.setPosition(s)
+            hc.setPosition(e, QTextCursor.MoveMode.KeepAnchor)
+            hc.mergeCharFormat(hf)
+
         self._page_text = text
         d.documentLayout().documentSize()   # 强制完成排版
 

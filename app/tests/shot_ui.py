@@ -63,6 +63,27 @@ def main():
         app.processEvents()
         snap(win, "03_reader_page4", 1120, 780)
 
+        # 目录侧栏
+        win._load_toc()
+        win.toggle_toc()
+        app.processEvents()
+        snap(win, "07_reader_toc", 1120, 780)
+        win.toggle_toc()
+        app.processEvents()
+
+        # 搜索侧栏 + 页内高亮
+        win.toggle_search()
+        win.search.input.setText("长夜将至")
+        win.search.run_search()
+        hits = win.search.current_hits()
+        if hits:
+            win._on_search_jump(hits[min(5, len(hits) - 1)].offset,
+                                hits[min(5, len(hits) - 1)].length)
+        app.processEvents()
+        snap(win, "08_reader_search", 1120, 780)
+        win.close_side()
+        app.processEvents()
+
         # 深色主题
         settings.set("appearance.bgColor", "#2B2B2B")
         settings.set("appearance.textColor", "#C8C8C8")

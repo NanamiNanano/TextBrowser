@@ -7,7 +7,8 @@ from typing import Dict, List, Optional
 
 from ..config import COVER_DIR, SUPPORTED_EXTS
 from .db import connect, init_db
-from .textfile import probe_encoding
+from . import toc as toc_rules
+from .textfile import TextFile, probe_encoding
 
 
 class Library:
@@ -98,6 +99,52 @@ class Library:
             (book_id, offset, percent, chapter_id, now))
         self.conn.execute("UPDATE book SET last_read_at = ? WHERE id = ?", (now, book_id))
         self.conn.commit()
+
+    # ------------------------------------------------------------ 目录
+    def replace_chapters(self, book_id: int, chapters) -> int:
+        """整体替换一本书的章节表（识别结果按书缓存，重识别时覆盖）。"""
+        rows = [(book_id, i, c.level, c.title, c.offset)
+                for i, c in enumerate(chapters)]
+        cur = self.conn.cursor()
+        cur.execute("DELETE FROM chapter WHERE book_id = ?", (book_id,))
+        cur.executemany(
+            "INSERT INTO chapter (book_id, idx, level, title, start_off) VALUES (?,?,?,?,?)",
+            rows)
+        cur.execute("UPDATE book SET chapter_count = ? WHERE id = ?",
+                    (len(rows), book_id))
+        self.conn.commit()
+        return len(rows)
+
+    def list_chapters(self, book_id: int) -> List[Dict]:
+        rows = self.conn.execute(
+            """SELECT idx, level, title, start_off FROM chapter
+                WHERE book_id = ? ORDER BY idx""", (book_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def ensure_chapters(self, book: Dict, force: bool = False) -> List[Dict]:
+        """取章节表；没有就现场识别并缓存。
+
+        TXT 100 MB 实测：建索引 104 ms + 识别 66 ms，可以同步跑；EPUB 的目录
+        由解析阶段直接产出（M4）。
+        """
+        bid = int(book["id"])
+        if not force:
+            cached = self.list_chapters(bid)
+            if cached:
+                return cached
+        if (book.get("format") or "txt").lower() != "txt":
+            return []
+        try:
+            tf = TextFile(book["file_path"], encoding=book.get("encoding")).open()
+        except OSError:
+            return []
+        try:
+            chapters = toc_rules.detect(tf)
+        finally:
+            tf.close()
+        if chapters:
+            self.replace_chapters(bid, chapters)
+        return self.list_chapters(bid)
 
     # ------------------------------------------------------------ 书签
     def add_bookmark(self, book_id: int, offset: int, chapter: str,

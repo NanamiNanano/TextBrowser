@@ -177,6 +177,47 @@ def build_qss(s: Settings) -> str:
         font-size: 15px;
         font-weight: 600;
     }}
+    QWidget#TocPanel {{
+        background: {panel};
+        border-left: 1px solid {border};
+    }}
+    QWidget#TocHeader {{
+        background: transparent;
+    }}
+    QLabel#TocTitle {{
+        font-size: 13px;
+        font-weight: 600;
+    }}
+    QPushButton#TocClose {{
+        background: transparent;
+        border: none;
+        border-radius: 11px;
+        padding: 0px;
+        font-size: 15px;
+        color: {muted};
+    }}
+    QPushButton#TocClose:hover {{
+        background: {hover};
+        color: {fg};
+    }}
+    QListWidget#TocList {{
+        background: transparent;
+        border: none;
+        outline: none;
+        padding: 2px 6px 6px 6px;
+    }}
+    QListWidget#TocList::item {{
+        padding: 6px 8px;
+        border-radius: 6px;
+        color: {fg};
+    }}
+    QListWidget#TocList::item:hover {{
+        background: {hover};
+    }}
+    QListWidget#TocList::item:selected {{
+        background: {accent};
+        color: #FFFFFF;
+    }}
     QToolTip {{
         background: {panel};
         color: {fg};
