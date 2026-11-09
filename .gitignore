@@ -1,0 +1,25 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---- 项目运行时数据（每台机器不同，不入库）----
+data/
+build/
+*.log
+
+# ---- 依赖（212 MB，用 scripts/bootstrap.py 重建）----
+vendor/
+
+# ---- 测试语料（100 MB+，用 spike/gen_corpus.py 重新生成）----
+spike/corpus/
+
+# ---- 本机生成的快捷方式（绝对路径，用 scripts/make_shortcut.ps1 重建）----
+*.lnk
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
