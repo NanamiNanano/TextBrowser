@@ -54,8 +54,7 @@ class ReaderView(QWidget):
         if offset >= tf.size:
             offset = 0
 
-        self._rebuild_paginator()
-        self.page = self.pg.layout_page(offset)
+        self._apply_layout(offset)
         self.setFocus()
         self.update()
         self.sig_status.emit("%s · %s · %s" % (
@@ -92,27 +91,33 @@ class ReaderView(QWidget):
             letter_spacing=float(a.get("letterSpacing") or 0.0),
         )
 
-    def _rebuild_paginator(self) -> None:
+    def _apply_layout(self, offset=None, layout=None) -> None:
+        """按当前设置重建分页器，并从指定偏移重排一页。
+
+        必须「重建 + 立刻重排」一起做，不能拆开：新建的 Paginator 文档是空的，
+        只重建不重排会留下一个空文档，表现就是拖窗口后正文变白、翻页才回来。
+        """
         if self.tf is None:
             return
-        self.pg = Paginator(self.tf, self._make_layout())
+        start = self.page.start if offset is None else offset
+        self.pg = Paginator(self.tf, layout or self._make_layout())
+        self.page = self.pg.layout_page(start)
 
     def apply_appearance(self) -> None:
-        """外观设置变化后重新分页，保持当前位置。"""
+        """外观设置变化后重新分页，保持当前位置（字节偏移不变）。"""
         if self.tf is None:
             return
-        offset = self.page.start
-        self._rebuild_paginator()
-        self.page = self.pg.layout_page(offset)
+        self._apply_layout(self.page.start)
         self.update()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         if self.tf is not None and self.pg is not None:
-            old = self.pg.layout.signature()
-            self._rebuild_paginator()
-            if self.pg.layout.signature() != old:
-                self.page = self.pg.layout_page(self.page.start)
+            # 先算新版式再决定要不要重建。正文栏宽度被 maxContentWidth 卡住时，
+            # 拖宽窗口并不会改变版式，此时重排是白费；但一旦重建就必须重排。
+            candidate = self._make_layout()
+            if candidate.signature() != self.pg.layout.signature():
+                self._apply_layout(self.page.start, candidate)
         self.update()
 
     # ------------------------------------------------------------ 翻页
