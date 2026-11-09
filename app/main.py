@@ -21,13 +21,22 @@ POLL_MS = 800
 def main(argv=None) -> int:
     argv = list(argv if argv is not None else sys.argv)
     files = [os.path.abspath(a) for a in argv[1:] if os.path.isfile(a)]
+    debug = os.environ.get("TB_DEBUG_INSTANCE")
 
-    # 已有实例：把要打开的文件留给它，然后唤起窗口走人
+    # 已有实例：优先唤醒它；唤不到说明占着名字的是残留内核对象，换备用名字继续启动
     if not instance.acquire(INSTANCE_KEY):
         if files:
             instance.write_open_request(DATA_DIR, files)
-        instance.activate(APP_DISPLAY_NAME)
-        return 0
+        activated = instance.activate(APP_DISPLAY_NAME)
+        if debug:
+            print("[main] 已有同名实例，activate ->", activated, file=sys.stderr)
+        if activated:
+            return 0
+        fallback = instance.acquire(INSTANCE_KEY + "-fallback")
+        if debug:
+            print("[main] 备用名字 acquire ->", fallback, file=sys.stderr)
+        if not fallback:
+            return 0
 
     app = QApplication(argv)
     app.setApplicationName("TextBrowser")

@@ -14,6 +14,7 @@ import ctypes.wintypes as wt
 import os
 
 ERROR_ALREADY_EXISTS = 183
+ERROR_ACCESS_DENIED = 5
 SW_RESTORE = 9
 SW_SHOW = 5
 SW_MINIMIZE = 6
@@ -34,29 +35,76 @@ _u32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
 
 _ENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+# 只认这些可执行文件拥有的窗口：标题可能被别的程序占用（浏览器标签、别家阅读器等）
+_SELF_IMAGES = {"python.exe", "pythonw.exe", "textbrowser.exe"}
+
+_k32.OpenProcess.restype = wt.HANDLE
+_k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+_k32.QueryFullProcessImageNameW.argtypes = [wt.HANDLE, wt.DWORD, wt.LPWSTR,
+                                            ctypes.POINTER(wt.DWORD)]
+_k32.CloseHandle.argtypes = [wt.HANDLE]
+
 # 句柄必须保活到进程结束，否则互斥体被销毁、单实例失效
 _mutex_handle = None
 
 
 def acquire(name: str) -> bool:
-    """尝试成为唯一实例。返回 True 表示本次是第一个实例。"""
+    """尝试成为唯一实例。返回 True 表示本次是第一个实例。
+
+    注意两种「已存在」：
+      * ERROR_ALREADY_EXISTS  —— 正常情况，同名对象已有人持有；
+      * ERROR_ACCESS_DENIED   —— 同名对象存在但当前令牌打不开（残留对象、或由
+        不同权限的进程创建）。语义上同样是「已被占用」，绝不能 fail-open 当成
+        「我是第一个」，否则会开出两个窗口。
+    """
     global _mutex_handle
+    debug = os.environ.get("TB_DEBUG_INSTANCE")
     try:
         h = _k32.CreateMutexW(None, False, name)
         err = ctypes.get_last_error()
-        if not h:
-            return True                      # 拿不到就用，不要因此阻止启动
-        if err == ERROR_ALREADY_EXISTS:
-            _k32.CloseHandle(h)
+        if debug:
+            import sys
+            print("[instance] pid=%d name=%r handle=%r last_error=%d"
+                  % (os.getpid(), name, h, err), file=sys.stderr)
+        if err in (ERROR_ALREADY_EXISTS, ERROR_ACCESS_DENIED):
+            if h:
+                _k32.CloseHandle(h)
             return False
+        if not h:
+            # 其它失败原因（权限/资源）不阻塞启动，避免程序完全打不开
+            return True
         _mutex_handle = h
         return True
     except OSError:
         return True
 
 
+def _owner_is_python(hwnd) -> bool:
+    """窗口属主是不是 Python 进程（也就是我们自己的窗口）。
+
+    只按标题匹配是不够的：任何程序都可能把窗口标题叫「文本浏览器」，
+    那样会让本程序误以为「已有实例在跑」而直接退出，用户双击就毫无反应。
+    """
+    pid = wt.DWORD(0)
+    _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not pid.value:
+        return False
+    h = _k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+    if not h:
+        return False
+    try:
+        size = wt.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        if not _k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return False
+        return os.path.basename(buf.value).lower() in _SELF_IMAGES
+    finally:
+        _k32.CloseHandle(h)
+
+
 def _titles_matching(prefix: str):
-    """枚举所有可见窗口，返回标题以 prefix 开头的窗口句柄（排除本进程自己的）。"""
+    """枚举可见窗口，返回「标题以 prefix 开头 且 属主是 Python」的窗口句柄。"""
     me = os.getpid()
     out = []
 
@@ -74,6 +122,8 @@ def _titles_matching(prefix: str):
         pid = wt.DWORD(0)
         _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value == me:
+            return True
+        if not _owner_is_python(hwnd):
             return True
         out.append(hwnd)
         return True

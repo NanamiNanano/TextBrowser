@@ -337,7 +337,9 @@ class MainWindow(QWidget):
         self.shelf.refresh()
 
     def show_status(self, text: str):
-        self.setWindowTitle("%s —— %s" % (APP_DISPLAY_NAME, text) if text else APP_DISPLAY_NAME)
+        # Qt 会自动把 applicationDisplayName 追加到标题后面，所以这里不要再拼
+        # 应用名，否则会变成「xx —— yy - 文本浏览器」这种重复。
+        self.setWindowTitle(text or APP_DISPLAY_NAME)
 
     def _on_progress(self, offset: int, pct: float):
         if self._side_showing(self.toc):
