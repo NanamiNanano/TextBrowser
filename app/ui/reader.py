@@ -74,7 +74,8 @@ class ReaderView(QWidget):
             return
         self._scroll_history.clear()
         self._scroll_y = 0.0
-        self._reset_page_stats()
+        # 刻意不重置页码统计：两种模式的「每页字节数」已按有效高度折算，
+        # 复用同一份平均值才能保证切换后页码连续、不跳号。
         self._apply_layout(offset)
         self.update()
         self._notify()
@@ -171,7 +172,7 @@ class ReaderView(QWidget):
             self._scroll_y = 0.0
             self.page = self.pg.layout_page(self._scroll_start)
             # 一块 = 2.4 屏，折算成每屏字节数才能算页码
-            self._sample_page_bytes(self.page, SCROLL_CHUNK_SCREENS)
+            self._sample_page_bytes(self.page, self._scroll_divisor())
         else:
             self.pg = Paginator(self.tf, layout or self._make_layout())
             self.page = self.pg.layout_page(start)
@@ -200,14 +201,27 @@ class ReaderView(QWidget):
         self._avg_page_bytes = 0.0
         self._samples = 0
 
+    def _paginate_content_height(self) -> float:
+        """分页模式下「一页」的有效正文高度。"""
+        margin_v = float(self.settings.data["appearance"].get("marginV") or 0)
+        return max(60.0, self.view_height - margin_v * 2)
+
+    def _scroll_divisor(self) -> float:
+        """滚动模式一块文本相当于多少「分页页」。
+
+        不能直接用 SCROLL_CHUNK_SCREENS：分页模式扣两次页边距、滚动模式也扣两次，
+        但两者基准高度不同，直接用 2.4 会让两模式的书页总数对不上（实测 103k vs 78k）。
+        按实际有效高度折算，两个模式算出来的页数才一致。
+        """
+        margin_v = float(self.settings.data["appearance"].get("marginV") or 0)
+        scroll_h = max(60.0, self.view_height * SCROLL_CHUNK_SCREENS - margin_v * 2)
+        return max(1.0, scroll_h / self._paginate_content_height())
+
     def _sample_page_bytes(self, page: Page, divisor: float = 1.0) -> None:
         """累加页字节数做估算。
 
         采够 5 页就冻结平均值：否则用户一边读、平均值一边变，会出现
         「第 3 / 110855 页」变成「第 3 / 103702 页」这种自相矛盾的显示。
-
-        滚动模式下「一块」是 2.4 屏，所以要按 divisor 折算成「一屏的字节数」，
-        否则页码会小 2.4 倍。
         """
         if self._samples >= 5:
             return
@@ -423,7 +437,7 @@ class ReaderView(QWidget):
         self._scroll_start = new_start
         self._scroll_y = 0.0
         self.page = self.pg.layout_page(new_start)
-        self._sample_page_bytes(self.page, SCROLL_CHUNK_SCREENS)
+        self._sample_page_bytes(self.page, self._scroll_divisor())
         self._refresh_highlights()
         return True
 
@@ -528,11 +542,11 @@ class ReaderView(QWidget):
         f.setPixelSize(11)
         p.setFont(f)
 
-        total = self.total_pages()
-        if total:
-            right = "第 %d / 约 %d 页  ·  %.1f%%" % (self.page_number(), total, self.percent())
-        else:
-            right = "%.1f%%" % self.percent()
+        # 只显示「当前页码 + 两位小数百分比」，不显示全书页数：
+        # 页数是用平均每页字节数估的，同一本书在分页/滚动两种模式下必然对不齐
+        # （实测同一偏移的每像素字节数相差最多 10%），显示出来只会自相矛盾。
+        # 百分比直接由「偏移 / 文件大小」得出，两种模式完全一致。
+        right = "第 %d 页  ·  %.2f%%" % (self.page_number(), self.percent())
 
         rect = QRectF(col_x, fy + 6, lay.width, FOOTER_H - 12)
         fm = QFontMetrics(f)

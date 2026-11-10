@@ -177,6 +177,68 @@ def build_qss(s: Settings) -> str:
         font-size: 15px;
         font-weight: 600;
     }}
+    QWidget#SettingsDialog {{
+        background: {bg};
+        border: 1px solid {border};
+    }}
+    QFrame#SettingsGroup {{
+        background: {panel};
+        border: 1px solid {border};
+        border-radius: 10px;
+    }}
+    QLabel#SettingsGroupTitle {{
+        font-size: 13px;
+        font-weight: 600;
+    }}
+    QComboBox, QFontComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{
+        background: {bg};
+        border: 1px solid {border};
+        border-radius: 6px;
+        padding: 3px 8px;
+        min-height: 22px;
+        color: {fg};
+        selection-background-color: {accent};
+        selection-color: #FFFFFF;
+    }}
+    QComboBox:hover, QFontComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
+        border-color: {accent};
+    }}
+    QComboBox QAbstractItemView {{
+        background: {panel};
+        border: 1px solid {border};
+        selection-background-color: {accent};
+        selection-color: #FFFFFF;
+        outline: none;
+    }}
+    /* 刻意不覆盖 ::drop-down / ::up-button 等子控件：
+       一旦用 QSS 指定了它们，Qt 就不再画默认三角/箭头，会变成点不动的空块。 */
+    QCheckBox {{
+        color: {fg};
+        spacing: 6px;
+    }}
+    QCheckBox::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1px solid {border};
+        border-radius: 3px;
+        background: {bg};
+    }}
+    QCheckBox::indicator:checked {{
+        background: {accent};
+        border-color: {accent};
+    }}
+    QSlider::groove:horizontal {{
+        height: 4px;
+        background: {border};
+        border-radius: 2px;
+    }}
+    QSlider::handle:horizontal {{
+        width: 14px;
+        height: 14px;
+        margin: -5px 0;
+        border-radius: 7px;
+        background: {accent};
+    }}
     QWidget#TocPanel {{
         background: {panel};
         border-left: 1px solid {border};

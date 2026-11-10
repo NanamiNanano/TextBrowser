@@ -5,12 +5,14 @@
 """
 import os
 import sys
-import tempfile
 
+from PySide6.QtCore import QPoint, QRect
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
 from app.core.library import Library
 from app.core.settings import Settings
+from app.ui.eyedropper import Eyedropper
 from app.ui.main_window import MainWindow
 from app.ui.theme import build_qss
 
@@ -31,6 +33,22 @@ def snap(win, name, w=None, h=None):
     pm.save(path)
     print("  %-28s %dx%d  %s" % (name, pm.width(), pm.height(), path))
     return path
+
+
+def make_fake_desktop(w: int, h: int) -> QImage:
+    """造一张“桌面”图给取色器截图用，避免把真实屏幕内容写进仓库。"""
+    img = QImage(w, h, QImage.Format.Format_RGB32)
+    p = QPainter(img)
+    p.fillRect(0, 0, w, h, QColor("#2E3440"))
+    p.fillRect(0, h - 60, w, 60, QColor("#3B4252"))
+    # 几条色带
+    colors = ["#BF616A", "#D08770", "#EBCB8B", "#A3BE8C", "#88C0D0", "#B48EAD"]
+    for i, c in enumerate(colors):
+        p.fillRect(60 + i * 130, 80, 110, 260, QColor(c))
+    # 一个深色窗口块
+    p.fillRect(60, 380, w - 120, 120, QColor("#4C566A"))
+    p.end()
+    return img
 
 
 def main():
@@ -110,7 +128,7 @@ def main():
         win.reader.apply_appearance()
         snap(win, "06_reader_narrow", 760, 620)
 
-        # 滚动模式：滚到半屏处，页脚应显示「第 N / 约 M 页」
+        # 滚动模式：滚到半屏处，页脚显示「第 N 页 · 百分比」
         settings.set("appearance.fontSize", 20)
         win.setStyleSheet(build_qss(settings))
         win.resize(1120, 780)
@@ -121,6 +139,28 @@ def main():
         app.processEvents()
         snap(win, "09_reader_scroll", 1120, 780)
         win.reader.set_mode("paginate")
+        app.processEvents()
+
+        # 设置面板
+        win.open_settings()
+        app.processEvents()
+        win._settings_dlg.grab().save(os.path.join(OUT, "10_settings.png"))
+        print("  %-28s %dx%d" % ("10_settings",
+                                 win._settings_dlg.width(), win._settings_dlg.height()))
+        win.close_settings()
+        app.processEvents()
+
+        # 取色器：用合成桌面图，避免把当前真实屏幕截进文档
+        shot = make_fake_desktop(900, 560)
+        d = Eyedropper([(QRect(0, 0, 900, 560), shot)])
+        d.show()
+        app.processEvents()
+        d._pos = QPoint(430, 300)
+        d.update()
+        app.processEvents()
+        d.grab().save(os.path.join(OUT, "11_eyedropper.png"))
+        print("  %-28s %dx%d" % ("11_eyedropper", d.width(), d.height()))
+        d.close()
         app.processEvents()
 
     win.hide()

@@ -57,6 +57,9 @@ def main(argv=None) -> int:
     app.setStyleSheet(build_qss(settings))
     win.show()
 
+    # 退出前必须让后台识别线程收尾，否则 QThread 会在运行中被析构
+    app.aboutToQuit.connect(win._stop_worker)
+
     def open_files(paths):
         if not paths:
             return

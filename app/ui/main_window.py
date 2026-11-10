@@ -62,6 +62,8 @@ class MainWindow(QWidget):
         self.setMinimumSize(720, 520)
         self.setMouseTracking(True)
         self._chapter_worker = None
+        self._settings_dlg = None
+        self._dropper = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -407,6 +409,60 @@ class MainWindow(QWidget):
         self.show_status("阅读模式：%s" % ("滚动" if target == "scroll" else "分页"))
         self.reader.setFocus()
 
+    # ------------------------------------------------------------ 设置
+    def open_settings(self):
+        from .settings_dialog import SettingsDialog
+        if self._settings_dlg is None:
+            dlg = SettingsDialog(self.settings, self)
+            dlg.sig_changed.connect(self.apply_settings_live)
+            dlg.sig_pick_screen.connect(self.pick_screen_color)
+            dlg.sig_close.connect(self.close_settings)
+            self._settings_dlg = dlg
+        self._settings_dlg.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._settings_dlg.refresh()
+        self._settings_dlg.show()
+        self._settings_dlg.raise_()
+        self._settings_dlg.activateWindow()
+
+    def close_settings(self):
+        if self._settings_dlg is not None:
+            self._settings_dlg.hide()
+            self.reader.setFocus()
+
+    def apply_settings_live(self):
+        """设置面板改动后即时生效：QSS、不透明度、阅读版式；模式变了就切模式。"""
+        if self.reader.tf is not None:
+            want = self.settings.get("reading.mode", "paginate")
+            current = "scroll" if self.reader.is_scroll_mode() else "paginate"
+            if want != current:
+                self.reader.set_mode(want)
+            else:
+                self.reader.apply_appearance()
+        self.apply_theme()
+        self.apply_opacity()
+
+    def pick_screen_color(self):
+        """从屏幕取色：先截图、再显示遮罩，顺序不能反。"""
+        from .eyedropper import Eyedropper
+        shots = Eyedropper.capture()
+        if not shots:
+            self.show_status("无法抓取屏幕")
+            return
+        self._dropper = Eyedropper(shots, None)
+        self._dropper.picked.connect(self._on_color_picked)
+        self._dropper.cancelled.connect(lambda: self.show_status("已取消取色"))
+        self._dropper.show()
+        self._dropper.raise_()
+        self._dropper.activateWindow()
+
+    def _on_color_picked(self, color):
+        self.settings.set("appearance.bgColor", color.name())
+        self.settings.save()
+        if self._settings_dlg is not None:
+            self._settings_dlg.refresh()
+        self.apply_settings_live()
+        self.show_status("背景色已设为 %s" % color.name().upper())
+
     # ------------------------------------------------------------ 快捷键
     _INPUT_TYPES = (QLineEdit, QTextEdit)
 
@@ -448,6 +504,10 @@ class MainWindow(QWidget):
         if ctrl and k == Qt.Key.Key_M:
             if in_reader:
                 self.toggle_reading_mode()
+            ev.accept()
+            return
+        if k == Qt.Key.Key_Comma and ctrl:
+            self.open_settings()
             ev.accept()
             return
 

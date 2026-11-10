@@ -15,7 +15,8 @@ $suites = @(
     @{ name = '目录';     module = 'app.tests.test_toc' },
     @{ name = '搜索';     module = 'app.tests.test_search' },
     @{ name = '阅读器';   module = 'app.tests.test_reader' },
-    @{ name = '阅读模式'; module = 'app.tests.test_modes' }
+    @{ name = '阅读模式'; module = 'app.tests.test_modes' },
+    @{ name = '设置与取色'; module = 'app.tests.test_m3' }
 )
 
 $failed = 0
