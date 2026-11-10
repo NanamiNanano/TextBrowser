@@ -35,8 +35,23 @@ RULES = [
     (2, re.compile(r"^(序章|序言|楔子|引子|前言|后记|尾声|终章|大结局|番外|外传|附录)\s*.{0,30}$")),
     (2, re.compile(r"^(Chapter|CHAPTER|chapter|Part|PART)\s*[0-9IVXLC]{1,8}\s*[:：.\-、]?\s*.{0,40}$")),
     (3, re.compile(r"^【.{1,30}】$")),
-    (3, re.compile(r"^[0-9]{1,4}\s*[.、]\s*\S{1,24}$")),
+    # 纯编号行：编号后的第一个实字符不能是数字或百分号。
+    # 真实小说里「99.7%」「14.99」「1. 12%」这类正文数字行极多，
+    # 宽松的写法会把它们全当章节（实测 17 条误判全是这种）。
+    (3, re.compile(r"^[0-9]{1,4}\s*[.、]\s*[^\d\s%‰０-９]\S{0,23}$")),
 ]
+
+# 行首出现这些字符 → 是缩进的正文段落，不是章节标题。
+# 很多 TXT 是「标题行 + 正文首行重复标题（带全角缩进）」的格式，
+# 不排除缩进行会得到成对的重复章节。
+# 强结构规则：`第N章`、`卷N`、`Chapter N`、`序章` 这些形态本身就够强，
+# 不能再拿「标题不该以标点结尾」去过滤——真实章节名常写成
+# 「第12章 勇猛精进（感谢某某的打赏）」，以括号结尾，一过滤就整章丢失
+# （实测这本书因此漏掉 404 章）。
+STRONG_RULES = RULES[:5]
+WEAK_RULES = RULES[5:]
+
+INDENT_CHARS = ("　", " ", "\t", "\u00a0", "\u3000")
 
 
 @dataclass
@@ -50,9 +65,16 @@ def _classify(line: str) -> Optional[int]:
     """返回层级，未命中返回 None。"""
     if not line or len(line) > MAX_TITLE_CHARS:
         return None
+
+    # 强结构先判，且不做标点过滤
+    for level, rx in STRONG_RULES:
+        if rx.match(line):
+            return level
+
+    # 弱结构才需要「标题不该以标点结尾」这一道，避免把正文句子当标题
     if line[-1] in _BAD_TAIL:
         return None
-    for level, rx in RULES:
+    for level, rx in WEAK_RULES:
         if rx.match(line):
             return level
     return None
@@ -68,10 +90,18 @@ def detect(tf, limit: int = MAX_CHAPTERS) -> List[Chapter]:
 
     for start, raw in tf.short_lines(MAX_TITLE_BYTES):
         try:
-            line = raw.decode(enc, "replace")
+            text = raw.decode(enc, "replace")
         except LookupError:
-            line = raw.decode("utf-8", "replace")
-        line = line.strip().strip("\ufeff")
+            text = raw.decode("utf-8", "replace")
+        text = text.rstrip("\r\n")
+
+        # 行首缩进 → 正文段落。这一步很关键：真实 TXT 常见
+        # 「第388章 标题」紧跟一行「　　第388章 标题」的正文首行，
+        # 不排除缩进行就会得到成对重复的章节。
+        if text[:1] in INDENT_CHARS:
+            continue
+
+        line = text.strip().lstrip("\ufeff")
         level = _classify(line)
         if level is None:
             continue

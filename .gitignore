@@ -15,6 +15,12 @@ vendor/
 # ---- 测试语料（100 MB+，用 spike/gen_corpus.py 重新生成）----
 spike/corpus/
 
+# ---- 用户的参考书籍（有版权，绝不入库）----
+参考文本/
+
+# ---- EPUB 转换出来的纯文本缓存（可由原书重新生成）----
+*_cache/
+
 # ---- 本机生成的快捷方式（绝对路径，用 scripts/make_shortcut.ps1 重建）----
 *.lnk
 

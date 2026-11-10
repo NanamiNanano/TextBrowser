@@ -6,6 +6,8 @@
   * 四边四角放透明「抓取条」，按下时走 startSystemResize()，由系统负责缩放；
   * 最大化时隐藏抓取条，避免和系统边框打架。
 """
+import os
+
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QStackedWidget,
@@ -269,7 +271,23 @@ class MainWindow(QWidget):
         if not book.get("exists", True):
             self.show_status("源文件已不存在：%s" % book["file_path"])
             return
-        if self.reader.open_book(book):
+
+        # EPUB：先确保有纯文本缓存，再让阅读器读缓存（阅读链路与 TXT 完全一致）
+        read_path = book["file_path"]
+        if (book.get("format") or "txt").lower() == "epub":
+            cache = self.library.epub_cache_path(int(book_id))
+            # 缓存存在但章节表为空 = 上次转换没走到写库（中断、或缓存被手工拷进来）
+            # 这种情况必须重转，否则目录会一直是空的。
+            need_convert = (not os.path.exists(cache)
+                            or not self.library.list_chapters(int(book_id)))
+            if need_convert:
+                if not self._convert_epub(book, cache):
+                    return
+                book = self.library.get_book(book_id) or book
+                self.shelf.refresh()
+            read_path = cache
+
+        if self.reader.open_book(book, read_path):
             self.stack.setCurrentWidget(self.reader)
             self.titlebar.set_title(book["title"])
             self.toc.clear()
@@ -280,6 +298,62 @@ class MainWindow(QWidget):
             QTimer.singleShot(40, self._load_toc)
         else:
             self.shelf.refresh()
+
+    # ------------------------------------------------------------ EPUB
+    def _convert_epub(self, book: dict, cache_path: str) -> bool:
+        """把 EPUB 转成纯文本缓存（后台线程 + 进度条）。返回是否成功。"""
+        from PySide6.QtCore import QEventLoop
+        from PySide6.QtWidgets import QProgressDialog
+
+        from .epub_worker import EpubWorker
+
+        dlg = QProgressDialog("正在转换 EPUB：%s" % book["title"], "取消", 0, 100, self)
+        dlg.setWindowTitle("EPUB 转换")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)      # 转完自己关，避免 100% 时被当成“取消”
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        dlg.show()
+
+        worker = EpubWorker(book["file_path"], cache_path, self)
+        self._epub_worker = worker
+        outcome = {}
+        loop = QEventLoop()
+
+        def on_progress(done, total):
+            dlg.setValue(int(done * 100 / max(1, total)))
+
+        def on_ok(result):
+            outcome["result"] = result
+            loop.quit()
+
+        def on_fail(message):
+            outcome["error"] = message
+            loop.quit()
+
+        worker.progressed.connect(on_progress)
+        worker.finished_ok.connect(on_ok)
+        worker.failed.connect(on_fail)
+        dlg.canceled.connect(lambda: (worker.request_cancel(), loop.quit()))
+
+        worker.start()
+        loop.exec()
+        worker.wait(5000)
+        dlg.close()
+        self._epub_worker = None
+
+        result = outcome.get("result")
+        if result is None:
+            if "error" in outcome:
+                self.show_status("EPUB 转换失败：%s" % outcome["error"])
+            else:
+                self.show_status("已取消转换")
+            return False
+
+        self.library.save_epub_result(int(book["id"]), result)
+        self.show_status("已完成转换：%d 章" % len(result.chapters))
+        return True
 
     # ------------------------------------------------------------ 侧栏
     def _side_showing(self, panel) -> bool:

@@ -18,6 +18,7 @@ from app.ui.theme import build_qss
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BIG = os.path.join(ROOT, "spike", "corpus", "big_100mb.txt")
+EPUB = os.path.join(ROOT, "参考文本", "黎明之剑.epub")
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "docs", "shots")
 os.makedirs(OUT, exist_ok=True)
 
@@ -161,6 +162,26 @@ def main():
         d.grab().save(os.path.join(OUT, "11_eyedropper.png"))
         print("  %-28s %dx%d" % ("11_eyedropper", d.width(), d.height()))
         d.close()
+        app.processEvents()
+
+    # ---- 真实 EPUB（如果用户放了参考书）----
+    epub_id = library.add_file(EPUB) if os.path.exists(EPUB) else None
+    if epub_id:
+        win.open_book(epub_id)                # 首次会触发转换（约 1 秒）
+        app.processEvents()
+        for _ in range(2):
+            win.reader.next_page()
+        app.processEvents()
+        snap(win, "12_epub_reader", 1120, 780)
+        win._load_toc()
+        w = win._chapter_worker
+        if w is not None and w.isRunning():
+            w.wait(20000)
+        app.processEvents()
+        win.toggle_toc()
+        app.processEvents()
+        snap(win, "13_epub_toc", 1120, 780)
+        win.toggle_toc()
         app.processEvents()
 
     win.hide()

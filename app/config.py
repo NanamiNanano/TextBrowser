@@ -29,8 +29,9 @@ DB_PATH = os.path.join(DATA_DIR, "library.db")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
 COVER_DIR = os.path.join(CACHE_DIR, "cover")
+TEXT_CACHE_DIR = os.path.join(CACHE_DIR, "text")
 
-for _d in (CACHE_DIR, COVER_DIR):
+for _d in (CACHE_DIR, COVER_DIR, TEXT_CACHE_DIR):
     os.makedirs(_d, exist_ok=True)
 
 SUPPORTED_EXTS = (".txt", ".epub")

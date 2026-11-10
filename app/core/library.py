@@ -5,9 +5,11 @@ import sqlite3
 import time
 from typing import Dict, List, Optional
 
-from ..config import COVER_DIR, SUPPORTED_EXTS
+from ..config import COVER_DIR, SUPPORTED_EXTS, TEXT_CACHE_DIR
 from .db import connect, init_db
 from . import toc as toc_rules
+from .epub import cache_name as epub_cache_name
+from .epub import read_meta as read_epub_meta
 from .textfile import TextFile, probe_encoding
 
 
@@ -15,6 +17,13 @@ class Library:
     def __init__(self, db_path: Optional[str] = None):
         self.conn = connect(db_path) if db_path else connect()
         init_db(self.conn)
+        # EPUB 的纯文本缓存放在文本缓存目录；测试用临时库时也隔离到库文件旁边
+        if db_path:
+            self.text_cache_dir = os.path.join(os.path.dirname(os.path.abspath(db_path)),
+                                               "text_cache")
+        else:
+            self.text_cache_dir = TEXT_CACHE_DIR
+        os.makedirs(self.text_cache_dir, exist_ok=True)
 
     # ------------------------------------------------------------ 书籍
     def add_file(self, path: str) -> Optional[int]:
@@ -37,20 +46,51 @@ class Library:
 
         fmt = ext.lstrip(".")
         title = os.path.splitext(os.path.basename(path))[0]
+        author = None
         encoding = None
         if fmt == "txt":
             try:
                 encoding, _ = probe_encoding(path)
             except OSError:
                 encoding = "utf-8"
+        else:
+            # EPUB：从 OPF 里读真实书名/作者，比文件名可靠
+            try:
+                meta_title, meta_author = read_epub_meta(path)
+                title = meta_title or title
+                author = meta_author or None
+            except Exception:                       # noqa: BLE001
+                pass
         now = int(time.time())
         cur = self.conn.execute(
-            """INSERT INTO book (file_path, file_size, format, title, encoding,
+            """INSERT INTO book (file_path, file_size, format, title, author, encoding,
                                  added_at, last_read_at, missing)
-               VALUES (?, ?, ?, ?, ?, ?, NULL, 0)""",
-            (path, os.path.getsize(path), fmt, title, encoding, now))
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0)""",
+            (path, os.path.getsize(path), fmt, title, author, encoding, now))
         self.conn.commit()
         return int(cur.lastrowid)
+
+    # ------------------------------------------------------------ EPUB
+    def epub_cache_path(self, book_id: int) -> str:
+        """EPUB 转换后的纯文本缓存路径（按 book_id 派生，不用改表结构）。"""
+        return os.path.join(self.text_cache_dir, epub_cache_name(book_id))
+
+    def save_epub_result(self, book_id: int, result) -> None:
+        """把转换结果落库：章节表 + 书名/作者 + 字符数。"""
+        self.replace_chapters(book_id, result.chapters)
+        self.conn.execute(
+            "UPDATE book SET title = COALESCE(NULLIF(?, ''), title),"
+            " author = COALESCE(NULLIF(?, ''), author),"
+            " encoding = 'utf-8', char_count = ? WHERE id = ?",
+            (result.title, result.author, result.chars, book_id))
+        self.conn.commit()
+
+    def set_book_meta(self, book_id: int, title=None, author=None) -> None:
+        if title:
+            self.conn.execute("UPDATE book SET title = ? WHERE id = ?", (title, book_id))
+        if author:
+            self.conn.execute("UPDATE book SET author = ? WHERE id = ?", (author, book_id))
+        self.conn.commit()
 
     def list_books(self) -> List[Dict]:
         rows = self.conn.execute(

@@ -81,9 +81,10 @@ class ReaderView(QWidget):
         self._notify()
 
     # ------------------------------------------------------------ 生命周期
-    def open_book(self, book: dict) -> bool:
+    def open_book(self, book: dict, path: str = None) -> bool:
+        """path 可覆盖实际读取的文件：EPUB 会读转换后的纯文本缓存。"""
         self.close_book()
-        path = book["file_path"]
+        path = path or book["file_path"]
         try:
             tf = TextFile(path, encoding=book.get("encoding"))
             tf.open()
