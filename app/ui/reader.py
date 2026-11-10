@@ -1,9 +1,18 @@
 # -*- coding: utf-8 -*-
-"""阅读视图：分页渲染、Q/E 翻页、进度保存、搜索高亮。"""
+"""阅读视图：分页 / 滚动两种模式、Q/E 翻页、进度保存、搜索高亮、页码估算。
+
+两种模式的共同基准都是「字节偏移」：
+  * 分页模式：一页 = 一屏，页边界由 Paginator 逐页求得；
+  * 滚动模式：一次排一块约 2.4 屏的文本，滚动只是在块内平移；滚到块尾时
+    以「当前可见首行」为新起点重排下一块。这样滚动不需要每帧排版。
+
+页码不再是会话内计数，而是用「已排版页的平均字节数」把偏移换算成全书页码，
+因此跨会话稳定，改字号后会随新页宽自然变化（估算值，界面标注「约」）。
+"""
 import time
 from bisect import bisect_left, bisect_right
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import QWidget
 
@@ -12,6 +21,8 @@ from ..core.textfile import TextFile
 from .theme import mix
 
 FOOTER_H = 34
+SCROLL_CHUNK_SCREENS = 2.4      # 滚动模式一次排版多少屏
+SCROLL_STEP = 0.9               # Q/E 在滚动模式下一次移动多少屏
 
 
 class ReaderView(QWidget):
@@ -32,14 +43,41 @@ class ReaderView(QWidget):
         self.book = None
         self._history = []
         self._last_save = 0.0
-        self._page_no = 1
+        self._reset_page_stats()
+
         # 章节表：偏移数组供二分定位当前章节，标题数组按下标取
         self._chap_offsets = []
         self._chap_titles = []
+
         # 搜索命中：[(字节偏移, 字节长度)]，按偏移升序
         self._hits = []
         self._hit_offsets = []
         self._current_hit = None
+
+        # 滚动模式状态
+        self._scroll_start = 0
+        self._scroll_y = 0.0
+        self._scroll_history = []
+        self._scroll_enc = "utf-8"
+
+    # ------------------------------------------------------------ 模式
+    def is_scroll_mode(self) -> bool:
+        return self.settings.get("reading.mode", "paginate") == "scroll"
+
+    def set_mode(self, mode: str) -> None:
+        """切换分页 / 滚动，保持阅读位置。"""
+        if mode not in ("paginate", "scroll"):
+            return
+        offset = self.top_offset()
+        self.settings.set("reading.mode", mode)
+        if self.tf is None:
+            return
+        self._scroll_history.clear()
+        self._scroll_y = 0.0
+        self._reset_page_stats()
+        self._apply_layout(offset)
+        self.update()
+        self._notify()
 
     # ------------------------------------------------------------ 生命周期
     def open_book(self, book: dict) -> bool:
@@ -53,9 +91,12 @@ class ReaderView(QWidget):
             return False
 
         self.tf = tf
+        self._scroll_enc = tf.encoding or "utf-8"
         self.book = book
         self._history.clear()
-        self._page_no = 1
+        self._scroll_history.clear()
+        self._scroll_y = 0.0
+        self._reset_page_stats()
 
         prog = self.library.get_progress(int(book["id"]))
         offset = int(prog.get("offset") or 0)
@@ -65,8 +106,7 @@ class ReaderView(QWidget):
         self._apply_layout(offset)
         self.setFocus()
         self.update()
-        self.sig_status.emit("%s · %s · %s" % (
-            book["title"], book.get("encoding") or "?", tf.newline.strip("'\\r\\n'") or "\\n"))
+        self.sig_status.emit("%s · %s" % (book["title"], book.get("encoding") or "?"))
         return True
 
     def close_book(self) -> None:
@@ -83,12 +123,24 @@ class ReaderView(QWidget):
         self._hits = []
         self._hit_offsets = []
         self._current_hit = None
+        self._scroll_start = 0
+        self._scroll_y = 0.0
+        self._scroll_history.clear()
 
     # ------------------------------------------------------------ 版式
-    def _make_layout(self) -> Layout:
+    @property
+    def view_height(self) -> int:
+        """正文可视高度（不含页脚）。"""
+        return max(120, self.height() - FOOTER_H)
+
+    def _make_layout(self, for_scroll: bool = False) -> Layout:
         a = self.settings.data["appearance"]
         margin_h = int(a["marginH"])
-        avail_h = max(200, self.height() - FOOTER_H)
+        margin_v = int(a["marginV"])
+        avail_h = self.view_height
+        if for_scroll:
+            # 滚动模式下一块要比一屏高，才有块内平移的余地
+            avail_h = int(avail_h * SCROLL_CHUNK_SCREENS)
         col = min(max(320, self.width() - margin_h * 2), int(a["maxContentWidth"]))
         return Layout(
             width=float(col),
@@ -97,7 +149,7 @@ class ReaderView(QWidget):
             font_px=int(a["fontSize"]),
             line_height=float(a["lineHeight"]),
             margin_h=float(margin_h),
-            margin_v=float(a["marginV"]),
+            margin_v=float(margin_v),
             align=a["align"],
             indent_chars=float(a["textIndent"]),
             text_color=a["textColor"],
@@ -105,21 +157,98 @@ class ReaderView(QWidget):
         )
 
     def _apply_layout(self, offset=None, layout=None) -> None:
-        """按当前设置重建分页器，并从指定偏移重排一页。
+        """重建分页器并立刻重排。
 
-        必须「重建 + 立刻重排」一起做，不能拆开：新建的 Paginator 文档是空的，
-        只重建不重排会留下一个空文档，表现就是拖窗口后正文变白、翻页才回来。
+        必须「重建 + 重排」一起做：新建的 Paginator 文档是空的，只重建不重排会
+        留下空文档，表现就是拖窗口后正文变白、翻页才回来。
         """
         if self.tf is None:
             return
         start = self.page.start if offset is None else offset
-        self.pg = Paginator(self.tf, layout or self._make_layout())
-        self.page = self.pg.layout_page(start)
+        if self.is_scroll_mode():
+            self.pg = Paginator(self.tf, layout or self._make_layout(for_scroll=True))
+            self._scroll_start = max(0, min(start, max(0, self.tf.size - 1)))
+            self._scroll_y = 0.0
+            self.page = self.pg.layout_page(self._scroll_start)
+            # 一块 = 2.4 屏，折算成每屏字节数才能算页码
+            self._sample_page_bytes(self.page, SCROLL_CHUNK_SCREENS)
+        else:
+            self.pg = Paginator(self.tf, layout or self._make_layout())
+            self.page = self.pg.layout_page(start)
+            self._sample_page_bytes(self.page)
         self._refresh_highlights()
+
+    def apply_appearance(self) -> None:
+        """外观设置变化后重新排版，保持当前位置（字节偏移不变）。"""
+        if self.tf is None:
+            return
+        self._reset_page_stats()
+        self._apply_layout(self.top_offset())
+        self.update()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self.tf is not None and self.pg is not None:
+            candidate = self._make_layout(for_scroll=self.is_scroll_mode())
+            if candidate.signature() != self.pg.layout.signature():
+                self._reset_page_stats()
+                self._apply_layout(self.top_offset(), candidate)
+        self.update()
+
+    # ------------------------------------------------------------ 页码估算
+    def _reset_page_stats(self) -> None:
+        self._avg_page_bytes = 0.0
+        self._samples = 0
+
+    def _sample_page_bytes(self, page: Page, divisor: float = 1.0) -> None:
+        """累加页字节数做估算。
+
+        采够 5 页就冻结平均值：否则用户一边读、平均值一边变，会出现
+        「第 3 / 110855 页」变成「第 3 / 103702 页」这种自相矛盾的显示。
+
+        滚动模式下「一块」是 2.4 屏，所以要按 divisor 折算成「一屏的字节数」，
+        否则页码会小 2.4 倍。
+        """
+        if self._samples >= 5:
+            return
+        n = (page.end - page.start) / max(1.0, divisor)
+        if n <= 0:
+            return
+        if self._avg_page_bytes <= 0:
+            self._avg_page_bytes = float(n)
+        else:
+            self._avg_page_bytes = self._avg_page_bytes * 0.8 + n * 0.2
+        self._samples += 1
+
+    def page_number(self) -> int:
+        if self._avg_page_bytes <= 0:
+            return 1
+        return max(1, int(self.top_offset() / self._avg_page_bytes) + 1)
+
+    def total_pages(self) -> int:
+        if self._avg_page_bytes <= 0 or self.tf is None:
+            return 0
+        return max(1, int(round(self.tf.size / self._avg_page_bytes)))
+
+    # ------------------------------------------------------------ 章节
+    def set_chapters(self, chapters) -> None:
+        self._chap_offsets = [int(c["start_off"]) for c in chapters]
+        self._chap_titles = [c["title"] for c in chapters]
+        self.update()
+
+    def current_chapter_index(self) -> int:
+        if not self._chap_offsets or self.tf is None:
+            return -1
+        return bisect_right(self._chap_offsets, self.top_offset()) - 1
+
+    def current_chapter_title(self):
+        i = self.current_chapter_index()
+        if 0 <= i < len(self._chap_titles):
+            return self._chap_titles[i]
+        return None
 
     # ------------------------------------------------------------ 搜索高亮
     def set_search_hits(self, hits, current=None) -> None:
-        """hits: [(字节偏移, 字节长度)]，按偏移升序；current 为当前跳转到的命中。"""
         self._hits = list(hits or ())
         self._hit_offsets = [h[0] for h in self._hits]
         self._current_hit = current
@@ -128,16 +257,21 @@ class ReaderView(QWidget):
     def clear_search_hits(self) -> None:
         self.set_search_hits([], None)
 
+    def _page_byte_range(self):
+        """当前文档覆盖的字节区间。"""
+        if self.is_scroll_mode():
+            return self._scroll_start, self.page.end
+        return self.page.start, self.page.end
+
     def _refresh_highlights(self) -> None:
-        """把落在当前页内的命中换算成页内字符区间，交给分页器上色。"""
-        if self.pg is None or self.page.is_empty:
+        if self.pg is None or not self.page.text:
             return
         if not self._hits:
             self.pg.set_highlights([], None)
             return
 
         enc = self.tf.encoding or "utf-8"
-        pstart, pend = self.page.start, self.page.end
+        pstart, pend = self._page_byte_range()
         i = bisect_left(self._hit_offsets, pstart)
         j = bisect_left(self._hit_offsets, pend)
 
@@ -160,79 +294,174 @@ class ReaderView(QWidget):
                 current = (s, e)
         self.pg.set_highlights(ranges, current)
 
-    def apply_appearance(self) -> None:
-        """外观设置变化后重新分页，保持当前位置（字节偏移不变）。"""
+    # ------------------------------------------------------------ 位置
+    def top_offset(self) -> int:
+        """当前可见区顶部的字节偏移——进度、页码、章节都以它为准。"""
         if self.tf is None:
-            return
-        self._apply_layout(self.page.start)
-        self.update()
+            return 0
+        if not self.is_scroll_mode():
+            return self.page.start
+        if self._scroll_y <= 0:
+            return self._scroll_start
+        return self._scroll_start + self._bytes_consumed(self._scroll_y)
 
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        if self.tf is not None and self.pg is not None:
-            # 先算新版式再决定要不要重建。正文栏宽度被 maxContentWidth 卡住时，
-            # 拖宽窗口并不会改变版式，此时重排是白费；但一旦重建就必须重排。
-            candidate = self._make_layout()
-            if candidate.signature() != self.pg.layout.signature():
-                self._apply_layout(self.page.start, candidate)
+    def _bytes_consumed(self, y: float) -> int:
+        """块内从顶部到 y 像素处消耗了多少字节。"""
+        if not self.page.text:
+            return 0
+        pos = self.pg.doc.documentLayout().hitTest(
+            QPointF(self.pg.content_width / 2, max(0.0, y)),
+            Qt.HitTestAccuracy.FuzzyHit)
+        pos = int(pos) if pos and pos > 0 else 0
+        try:
+            return len(self.page.text[:pos].encode(self._scroll_enc, "ignore"))
+        except LookupError:
+            return 0
+
+    def percent(self) -> float:
+        if self.tf is None or not self.tf.size:
+            return 0.0
+        return min(100.0, self.top_offset() / self.tf.size * 100.0)
+
+    def _save_progress(self, force: bool = False) -> None:
+        if self.book is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_save < 1.0:
+            return
+        self._last_save = now
+        self.library.save_progress(int(self.book["id"]), self.top_offset(), self.percent())
+
+    def _notify(self) -> None:
         self.update()
+        self.sig_progress.emit(self.top_offset(), self.percent())
+        self._save_progress()
 
     # ------------------------------------------------------------ 翻页
     def next_page(self) -> bool:
-        if self.tf is None or self.page.is_empty:
+        if self.tf is None:
+            return False
+        if self.is_scroll_mode():
+            return self.scroll_by_screen(1)
+        if self.page.is_empty:
             return False
         if self.page.end >= self.tf.size:
             self.sig_status.emit("已经到最后一页")
             return False
         self._history.append(self.page.start)
-        self._page_no += 1
         self.page = self.pg.layout_page(self.page.end)
+        self._sample_page_bytes(self.page)
         self._after_turn()
         return True
 
     def prev_page(self) -> bool:
         if self.tf is None:
             return False
+        if self.is_scroll_mode():
+            return self.scroll_by_screen(-1)
         if self._history:
             start = self._history.pop()
-            self._page_no = max(1, self._page_no - 1)
             self.page = self.pg.layout_page(start)
             self._after_turn()
             return True
-        # 没有历史：向前回退约一页的量
         if self.page.start <= 0:
             self.sig_status.emit("已经是第一页")
             return False
         guess = max(0, self.page.start - max(600, len(self.page.text) * 3))
         self.page = self.pg.layout_page(guess)
-        self._page_no = max(1, self._page_no - 1)
         self._after_turn()
         return True
 
-    # ------------------------------------------------------------ 章节
-    def set_chapters(self, chapters) -> None:
-        """chapters: [{'start_off': int, 'title': str, ...}]，按 start_off 升序。"""
-        self._chap_offsets = [int(c["start_off"]) for c in chapters]
-        self._chap_titles = [c["title"] for c in chapters]
-        self.update()
+    def _after_turn(self) -> None:
+        self._refresh_highlights()      # 换页后命中集合变了，要重新上色
+        self._notify()
 
-    def current_chapter_index(self) -> int:
-        if not self._chap_offsets or self.tf is None:
-            return -1
-        return bisect_right(self._chap_offsets, self.page.start) - 1
+    # ------------------------------------------------------------ 滚动
+    def scroll_by_screen(self, direction: int) -> bool:
+        step = self.view_height * SCROLL_STEP
+        return self.scroll_by(step * (1 if direction > 0 else -1))
 
-    def current_chapter_title(self):
-        i = self.current_chapter_index()
-        if 0 <= i < len(self._chap_titles):
-            return self._chap_titles[i]
-        return None
+    def scroll_by(self, dy: float) -> bool:
+        if not self.is_scroll_mode() or self.tf is None:
+            return False
+        content_h = self.pg.doc.documentLayout().documentSize().height()
+        view_h = max(40.0, self.pg.content_height / SCROLL_CHUNK_SCREENS)
+        limit = content_h - view_h
 
+        new_y = self._scroll_y + dy
+
+        # 滚过块尾：以当前可见首行为起点排下一块
+        while new_y > limit:
+            if self.page.end >= self.tf.size:
+                new_y = max(0.0, limit)
+                self.sig_status.emit("已经到底了")
+                break
+            if not self._advance_chunk():
+                break
+            new_y -= limit
+            content_h = self.pg.doc.documentLayout().documentSize().height()
+            view_h = max(40.0, self.pg.content_height / SCROLL_CHUNK_SCREENS)
+            limit = content_h - view_h
+
+        # 滚过块首：回退一块
+        while new_y < 0:
+            if not self._rewind_chunk():
+                new_y = 0.0
+                break
+            new_y += max(40.0, self.pg.content_height / SCROLL_CHUNK_SCREENS) * 0.5
+
+        self._scroll_y = max(0.0, new_y)
+        self._notify()
+        return True
+
+    def _advance_chunk(self) -> bool:
+        consumed = self._bytes_consumed(self._scroll_y)
+        new_start = self._scroll_start + max(1, consumed)
+        if new_start >= self.tf.size:
+            return False
+        self._scroll_history.append((self._scroll_start, self._scroll_y))
+        self._scroll_start = new_start
+        self._scroll_y = 0.0
+        self.page = self.pg.layout_page(new_start)
+        self._sample_page_bytes(self.page, SCROLL_CHUNK_SCREENS)
+        self._refresh_highlights()
+        return True
+
+    def _rewind_chunk(self) -> bool:
+        if self._scroll_history:
+            start, y = self._scroll_history.pop()
+            self._scroll_start = start
+            self.page = self.pg.layout_page(start)
+            self._scroll_y = max(0.0, y)
+            self._refresh_highlights()
+            return True
+        if self._scroll_start <= 0:
+            return False
+        guess = max(0, self._scroll_start - int(max(1.0, self._avg_page_bytes or 2000)))
+        self._scroll_start = guess
+        self.page = self.pg.layout_page(guess)
+        self._scroll_y = 0.0
+        self._refresh_highlights()
+        return True
+
+    def wheelEvent(self, ev):
+        if self.tf is None:
+            return
+        if self.is_scroll_mode():
+            dy = ev.angleDelta().y()
+            if dy:
+                self.scroll_by(-dy * 0.55)
+                ev.accept()
+                return
+        super().wheelEvent(ev)
+
+    # ------------------------------------------------------------ 跳转
     def goto_offset(self, offset: int, align_line: bool = False) -> None:
         """跳到指定字节偏移。
 
-        align_line=True 时回退到该偏移所在行的行首：搜索命中常常落在句子中间，
-        直接从命中处开头会把半句话切在页顶，看不出上下文。只有在本行不太长时
-        才回退，否则命中会被推到页外去。
+        align_line=True 时回退到该偏移所在行的行首：搜索命中常落在句子中间，
+        直接从命中处开头会把半句话切在页顶。只有行内偏移不大时才回退，
+        否则命中会被推出页外。
         """
         if self.tf is None:
             return
@@ -242,31 +471,20 @@ class ReaderView(QWidget):
             if offset - line_start <= 400:
                 offset = line_start
         self._history.clear()
+        self._scroll_history.clear()
+        if self.is_scroll_mode():
+            self._apply_layout(offset)
+            self._notify()
+            return
         self.page = self.pg.layout_page(offset)
+        self._sample_page_bytes(self.page)
         self._after_turn()
 
-    def _after_turn(self) -> None:
-        self._refresh_highlights()      # 换页后命中集合变了，要重新上色
-        self.update()
-        pct = self.percent()
-        self.sig_progress.emit(self.page.start, pct)
-        self._save_progress()
-
-    def percent(self) -> float:
-        if self.tf is None or not self.tf.size:
-            return 0.0
-        return min(100.0, self.page.start / self.tf.size * 100.0)
-
-    def _save_progress(self, force: bool = False) -> None:
-        if self.book is None:
-            return
-        now = time.monotonic()
-        if not force and now - self._last_save < 1.0:
-            return
-        self._last_save = now
-        self.library.save_progress(int(self.book["id"]), self.page.start, self.percent())
-
     # ------------------------------------------------------------ 绘制
+    def _col_geometry(self):
+        lay = self.pg.layout
+        return lay, (self.width() - lay.width) / 2.0
+
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
@@ -284,36 +502,53 @@ class ReaderView(QWidget):
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "从书架选一本书开始阅读")
             return
 
-        lay = self.pg.layout
-        col_x = (self.width() - lay.width) / 2.0
-        self.pg.draw(p, col_x, lay.margin_v)
+        lay, col_x = self._col_geometry()
 
-        # 页脚（与正文栏对齐，不要用整窗宽度，否则窄栏时左右会错位）
-        if self.settings.get("reading.showFooter", True):
-            fy = self.height() - FOOTER_H
-            p.setPen(QColor(mix(bg.name(), fg.name(), 0.45)))
-            f = QFont("Microsoft YaHei")
-            f.setPixelSize(11)
-            p.setFont(f)
-            right = "第 %d 页  ·  %.1f%%" % (self._page_no, self.percent())
-            rect = QRectF(col_x, fy + 6, lay.width, FOOTER_H - 12)
-            fm = QFontMetrics(f)
+        if self.is_scroll_mode():
+            # 块内平移：文档顶端画在 margin_v - scroll_y，只露出正文可视区。
+            # 裁剪框的 x 必须用正文栏的 col_x（居中后的左边界），用 margin_h
+            # 会在窗口变宽时把右侧文字切掉。
+            view_rect = QRectF(col_x, lay.margin_v, lay.width,
+                               max(20, self.view_height - lay.margin_v * 2))
+            p.save()
+            p.setClipRect(view_rect)
+            self.pg.draw(p, col_x, lay.margin_v - self._scroll_y)
+            p.restore()
+        else:
+            self.pg.draw(p, col_x, lay.margin_v)
 
-            # 左边放当前章节名，右边固定放页码/进度；章节名过长就省略，
-            # 并给右边预留宽度，避免两边文字撞在一起。
-            chapter = self.current_chapter_title()
-            if chapter:
-                reserved = fm.horizontalAdvance(right) + 24
-                left = fm.elidedText(chapter, Qt.TextElideMode.ElideMiddle,
-                                     max(40, int(lay.width - reserved)))
-                p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), left)
+        self._paint_footer(p, bg, fg, lay, col_x)
 
-            p.drawText(rect, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), right)
+    def _paint_footer(self, p, bg, fg, lay, col_x):
+        if not self.settings.get("reading.showFooter", True):
+            return
+        fy = self.height() - FOOTER_H
+        p.setPen(QColor(mix(bg.name(), fg.name(), 0.45)))
+        f = QFont("Microsoft YaHei")
+        f.setPixelSize(11)
+        p.setFont(f)
+
+        total = self.total_pages()
+        if total:
+            right = "第 %d / 约 %d 页  ·  %.1f%%" % (self.page_number(), total, self.percent())
+        else:
+            right = "%.1f%%" % self.percent()
+
+        rect = QRectF(col_x, fy + 6, lay.width, FOOTER_H - 12)
+        fm = QFontMetrics(f)
+
+        chapter = self.current_chapter_title()
+        if chapter:
+            reserved = fm.horizontalAdvance(right) + 24
+            left = fm.elidedText(chapter, Qt.TextElideMode.ElideMiddle,
+                                 max(40, int(lay.width - reserved)))
+            p.drawText(rect, int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), left)
+
+        p.drawText(rect, int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter), right)
 
     # ------------------------------------------------------------ 输入
     def keyPressEvent(self, ev):
-        k = ev.key()
-        if k in (Qt.Key.Key_Escape,):
+        if ev.key() == Qt.Key.Key_Escape:
             ev.ignore()
             return
         super().keyPressEvent(ev)

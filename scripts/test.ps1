@@ -14,7 +14,8 @@ $suites = @(
     @{ name = '核心层';   module = 'app.tests.smoke_core' },
     @{ name = '目录';     module = 'app.tests.test_toc' },
     @{ name = '搜索';     module = 'app.tests.test_search' },
-    @{ name = '阅读器';   module = 'app.tests.test_reader' }
+    @{ name = '阅读器';   module = 'app.tests.test_reader' },
+    @{ name = '阅读模式'; module = 'app.tests.test_modes' }
 )
 
 $failed = 0

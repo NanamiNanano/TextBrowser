@@ -211,12 +211,19 @@ check("GBK 文件缩放正常", t_gbk)
 print("\n== 7. 目录侧栏 ==")
 
 
+def wait_worker(win, timeout=20000):
+    """等后台识别线程结束，并把结果信号投递回主线程。"""
+    w = getattr(win, "_chapter_worker", None)
+    if w is not None and w.isRunning():
+        w.wait(timeout)
+    app.processEvents()
+
+
 def t_toc_load():
-    books = [b for b in library.list_books() if b["id"] == bid]
     win.open_book(bid)
     app.processEvents()
-    win._load_toc()                      # 直接调用，绕过 QTimer
-    app.processEvents()
+    win._load_toc()
+    wait_worker(win)                     # 识别在后台线程，必须等它回来
     assert reader._chap_offsets, "章节没加载进阅读视图"
     assert win.toc.list.count() > 1000, "侧栏条目太少：%d" % win.toc.list.count()
     return "%d 章已载入" % len(reader._chap_offsets)

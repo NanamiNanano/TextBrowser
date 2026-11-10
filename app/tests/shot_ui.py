@@ -110,6 +110,19 @@ def main():
         win.reader.apply_appearance()
         snap(win, "06_reader_narrow", 760, 620)
 
+        # 滚动模式：滚到半屏处，页脚应显示「第 N / 约 M 页」
+        settings.set("appearance.fontSize", 20)
+        win.setStyleSheet(build_qss(settings))
+        win.resize(1120, 780)
+        win.reader.apply_appearance()
+        win.reader.set_mode("scroll")
+        for _ in range(3):
+            win.reader.scroll_by(300)
+        app.processEvents()
+        snap(win, "09_reader_scroll", 1120, 780)
+        win.reader.set_mode("paginate")
+        app.processEvents()
+
     win.hide()
     library.close()
     print("\n完成。共 %d 张。" % len([f for f in os.listdir(OUT) if f.endswith(".png")]))

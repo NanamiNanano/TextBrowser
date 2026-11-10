@@ -72,6 +72,14 @@ class TocPanel(QWidget):
         self.lbl_count.setText("")
         self._placeholder("打开一本书后显示目录")
 
+    def set_loading(self) -> None:
+        """识别中的占位，避免用户以为这本书没有目录。"""
+        self.list.clear()
+        self._offsets = []
+        self._items = []
+        self.lbl_count.setText("识别中…")
+        self._placeholder("正在识别章节，请稍候…")
+
     def _placeholder(self, text: str) -> None:
         item = QListWidgetItem(text)
         item.setFlags(Qt.ItemFlag.NoItemFlags)

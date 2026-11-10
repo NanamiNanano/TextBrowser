@@ -20,6 +20,7 @@ from .search_panel import SearchPanel
 from .theme import build_qss, ui_colors
 from .titlebar import TitleBar
 from .toc_panel import TocPanel
+from .toc_worker import ChapterWorker
 from .tray import Tray
 
 GRIP = 6
@@ -60,6 +61,7 @@ class MainWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self.setMinimumSize(720, 520)
         self.setMouseTracking(True)
+        self._chapter_worker = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -242,11 +244,19 @@ class MainWindow(QWidget):
         self.reader.setFocus()
 
     def quit_app(self):
+        self._stop_worker()
         self.reader.close_book()
         self._save_geometry()
         self.tray.hide()
         from PySide6.QtWidgets import QApplication
         QApplication.quit()
+
+    def _stop_worker(self, timeout_ms: int = 3000) -> None:
+        """退出前等工作线程收尾，避免 QThread 在运行中被销毁。"""
+        w = self._chapter_worker
+        if w is not None and w.isRunning():
+            w.wait(timeout_ms)
+        self._chapter_worker = None
 
     # ------------------------------------------------------------ 文档
     def open_book(self, book_id: int):
@@ -287,7 +297,7 @@ class MainWindow(QWidget):
             return
         self._load_toc()
         self.open_side(self.toc)
-        self.toc.highlight_offset(self.reader.page.start)
+        self.toc.highlight_offset(self.reader.top_offset())
         self.reader.setFocus()
 
     def toggle_search(self):
@@ -295,23 +305,65 @@ class MainWindow(QWidget):
             self.close_side()
             return
         self._load_toc()                 # 结果里要显示章节名，需要章节表
+        # 章节识别是异步的，可能还没回来；但搜索本身不依赖章节，
+        # 这里必须先把文档交给搜索面板，否则刚打开书就搜会提示「先打开一本书」。
+        book = self.reader.book
+        if book and self.reader.tf is not None:
+            self.search.set_target(self.reader.tf,
+                                   self.library.list_chapters(int(book["id"])))
         self.open_side(self.search)
         self.search.focus_input()
 
-    def _load_toc(self):
-        """载入（必要时现场识别）当前书的章节，同步给阅读视图、目录与搜索。"""
+    def _load_toc(self, force: bool = False):
+        """载入当前书的章节：有缓存直接显示，没有就丢给后台线程识别。
+
+        识别本身约 170 ms（100 MB），但它是「建行索引 + 扫描」，放在主线程会把
+        首屏之后的交互卡住，所以走 ChapterWorker（独立 TextFile + 独立 mmap）。
+        """
         book = self.reader.book
         if not book:
             self.toc.clear()
             self.search.set_target(None, [])
             return
-        chapters = self.library.ensure_chapters(book)
+
+        cached = [] if force else self.library.list_chapters(int(book["id"]))
+        if cached:
+            self._apply_chapters(cached)
+            return
+
+        if self._chapter_worker is not None and self._chapter_worker.isRunning():
+            return
+
+        self.toc.set_loading()
+        self.show_status("正在识别目录…")
+        worker = ChapterWorker(int(book["id"]), book["file_path"],
+                               book.get("encoding"), self)
+        worker.finished_ok.connect(self._on_chapters_ready)
+        worker.failed.connect(self._on_chapters_failed)
+        self._chapter_worker = worker
+        worker.start()
+
+    def _apply_chapters(self, chapters) -> None:
         self.reader.set_chapters(chapters)
         self.toc.set_chapters(chapters)
-        self.toc.highlight_offset(self.reader.page.start)
+        self.toc.highlight_offset(self.reader.top_offset())
         self.search.set_target(self.reader.tf, chapters)
-        if not chapters and self.side.currentWidget() is self.toc and self.side.isVisible():
+
+    def _on_chapters_ready(self, book_id: int, chapters) -> None:
+        book = self.reader.book
+        if not book or int(book["id"]) != int(book_id):
+            return                      # 已经换书了，丢弃过期结果
+        if chapters:
+            self.library.replace_chapters(int(book_id), chapters)
+        rows = self.library.list_chapters(int(book_id))
+        self._apply_chapters(rows)
+        self.show_status("")
+        if not rows and self._side_showing(self.toc):
             self.show_status("未识别到章节，可能是文件命名没有规律")
+
+    def _on_chapters_failed(self, book_id: int, message: str) -> None:
+        self.toc.set_chapters([])
+        self.show_status("目录识别失败：%s" % message)
 
     def _on_toc_jump(self, offset: int):
         if self.reader.tf is None:
@@ -344,6 +396,16 @@ class MainWindow(QWidget):
     def _on_progress(self, offset: int, pct: float):
         if self._side_showing(self.toc):
             self.toc.highlight_offset(offset)
+
+    def toggle_reading_mode(self):
+        """分页 / 滚动切换（Ctrl+M），位置保持不变。"""
+        if self.reader.tf is None:
+            return
+        target = "paginate" if self.reader.is_scroll_mode() else "scroll"
+        self.reader.set_mode(target)
+        self.settings.save()
+        self.show_status("阅读模式：%s" % ("滚动" if target == "scroll" else "分页"))
+        self.reader.setFocus()
 
     # ------------------------------------------------------------ 快捷键
     _INPUT_TYPES = (QLineEdit, QTextEdit)
@@ -381,6 +443,11 @@ class MainWindow(QWidget):
         if ctrl and k == Qt.Key.Key_F:
             if in_reader:
                 self.toggle_search()
+            ev.accept()
+            return
+        if ctrl and k == Qt.Key.Key_M:
+            if in_reader:
+                self.toggle_reading_mode()
             ev.accept()
             return
 
