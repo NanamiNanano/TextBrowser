@@ -61,6 +61,12 @@ def _report(module_error: str) -> None:
 def main() -> int:
     _ensure_streams()
 
+    # PyInstaller 打包后：代码与 PySide6 都在 bundle 里，没有 vendor 目录可加，
+    # 直接用打包进来的模块即可。
+    if getattr(sys, "frozen", False):
+        from app.main import main as app_main
+        return app_main()
+
     if not os.path.isdir(VENDOR):
         _report("找不到依赖目录：%s\n请确认没有移动 vendor 文件夹。" % VENDOR)
         return 1

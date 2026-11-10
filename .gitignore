@@ -7,6 +7,7 @@ __pycache__/
 # ---- 项目运行时数据（每台机器不同，不入库）----
 data/
 build/
+dist/
 *.log
 
 # ---- 依赖（212 MB，用 scripts/bootstrap.py 重建）----

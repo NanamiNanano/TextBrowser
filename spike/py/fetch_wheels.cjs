@@ -11,8 +11,12 @@ const pkgs = process.argv.slice(3);
 fs.mkdirSync(outDir, { recursive: true });
 
 const parseVer = f => {
-  const m = f.match(/-(\d+\.\d+\.\d+(?:\.\d+)?)/);
-  return m ? m[1].split('.').map(Number) : [0];
+  // 轮子文件名形如 <name>-<version>-<pytag>-<abi>-<plat>.whl。
+  // 版本可能是 6.12.0 / 2024.11 / 2024.8.26 等形态，统一取「名字后第一段」，
+  // 原来写死 \d+\.\d+\.\d+ 会把 2024.11 这种两段式版本解析成 0，导致选到旧版本。
+  const m = f.match(/^(.+?)-(\d[^-]*)-(py|cp|pp)\d/i);
+  if (!m) return [0];
+  return m[2].split('.').map(n => parseInt(n, 10) || 0);
 };
 const cmpVer = (a, b) => {
   for (let i = 0; i < Math.max(a.length, b.length); i++) {
@@ -25,7 +29,8 @@ const score = f => {
   let s = 0;
   if (/cp312-cp312/.test(f)) s += 100;
   if (/abi3/.test(f)) s += 50;
-  if (/py3-none-win_amd64/.test(f)) s += 40;
+  if (/none-win_amd64\.whl$/.test(f)) s += 45;
+  if (/none-any\.whl$/.test(f)) s += 40;      // 纯 Python 包（pyinstaller 等）
   if (/cp312/.test(f)) s += 20;
   return s;
 };
@@ -91,7 +96,7 @@ async function download(url, dest, label) {
 (async () => {
   for (const p of pkgs) {
     const html = await getPage(p);
-    const links = parseLinks(html, MIRROR + p + '/').filter(l => /win_amd64\.whl$/.test(l.name));
+    const links = parseLinks(html, MIRROR + p + '/').filter(l => /(win_amd64|none-any)\.whl$/.test(l.name));
     if (!links.length) { console.log(`${p}: 镜像里没有 win_amd64 轮子`); continue; }
     links.sort((a, b) => cmpVer(parseVer(b.name), parseVer(a.name)) || score(b.name) - score(a.name));
     const best = links.find(l => score(l.name) >= 40) || links[0];

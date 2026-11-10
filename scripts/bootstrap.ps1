@@ -1,4 +1,4 @@
-# 安装依赖到 vendor\py312（不污染系统 site-packages）
+﻿# 安装依赖到 vendor\py312（不污染系统 site-packages）
 #
 # 优先用 pip；若 pip 因「临时文件删除被拒」失败（受限环境常见），
 # 退回到「node 下载 wheel + Python zipfile 解压」的方式，后者只需要写权限。

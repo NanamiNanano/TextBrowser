@@ -17,6 +17,7 @@ from ..config import APP_DISPLAY_NAME
 from ..core.paginate import Page
 from ..core.settings import Settings
 from .bookshelf import BookshelfView
+from .bookmark_panel import BookmarkPanel
 from .reader import ReaderView
 from .search_panel import SearchPanel
 from .theme import build_qss, ui_colors
@@ -80,12 +81,14 @@ class MainWindow(QWidget):
         self.stack.addWidget(self.shelf)
         self.stack.addWidget(self.reader)
 
-        # 正文区 + 右侧栏（目录 / 搜索共用，默认收起）
+        # 正文区 + 右侧栏（目录 / 搜索 / 书签共用，默认收起）
         self.toc = TocPanel(self)
         self.search = SearchPanel(self)
+        self.bookmarks = BookmarkPanel(self)
         self.side = QStackedWidget(self)
         self.side.addWidget(self.toc)
         self.side.addWidget(self.search)
+        self.side.addWidget(self.bookmarks)
         self.side.setVisible(False)
         content = QWidget(self)
         content_lay = QHBoxLayout(content)
@@ -114,6 +117,11 @@ class MainWindow(QWidget):
         self.toc.sig_close.connect(self.close_side)
         self.search.sig_jump.connect(self._on_search_jump)
         self.search.sig_close.connect(self.close_side)
+        self.bookmarks.sig_jump.connect(self._on_bookmark_jump)
+        self.bookmarks.sig_add.connect(self.add_bookmark)
+        self.bookmarks.sig_edit.connect(self._edit_bookmark)
+        self.bookmarks.sig_delete.connect(self._delete_bookmark)
+        self.bookmarks.sig_close.connect(self.close_side)
 
         # 缩放抓取条
         self._grips = []
@@ -292,6 +300,7 @@ class MainWindow(QWidget):
             self.titlebar.set_title(book["title"])
             self.toc.clear()
             self.search.set_target(None, [])
+            self.bookmarks.clear()
             self.reader.clear_search_hits()
             # 目录延后到首帧之后加载：100 MB TXT 首次识别约 170 ms，
             # 不该挡在第一页显示之前；二次打开走缓存，几乎无感。
@@ -472,6 +481,8 @@ class MainWindow(QWidget):
     def _on_progress(self, offset: int, pct: float):
         if self._side_showing(self.toc):
             self.toc.highlight_offset(offset)
+        elif self._side_showing(self.bookmarks):
+            self.bookmarks.highlight_offset(offset)
 
     def toggle_reading_mode(self):
         """分页 / 滚动切换（Ctrl+M），位置保持不变。"""
@@ -481,6 +492,88 @@ class MainWindow(QWidget):
         self.reader.set_mode(target)
         self.settings.save()
         self.show_status("阅读模式：%s" % ("滚动" if target == "scroll" else "分页"))
+        self.reader.setFocus()
+
+    # ------------------------------------------------------------ 书签
+    def toggle_bookmarks(self):
+        if self._side_showing(self.bookmarks):
+            self.close_side()
+            return
+        self._load_bookmarks()
+        self.open_side(self.bookmarks)
+        self.bookmarks.highlight_offset(self.reader.top_offset())
+        self.reader.setFocus()
+
+    def _load_bookmarks(self):
+        book = self.reader.book
+        if not book:
+            self.bookmarks.clear()
+            return
+        self.bookmarks.set_bookmarks(self.library.list_bookmarks(int(book["id"])))
+
+    def _bookmark_excerpt(self, offset: int) -> str:
+        """摘要要从当前位置往后取，不能直接用 page.text 开头（滚动模式下会偏移）。"""
+        tf = self.reader.tf
+        try:
+            raw = tf.read_bytes(offset, 240)
+            text = raw.decode(tf.encoding or "utf-8", "ignore")
+        except (LookupError, AttributeError):
+            text = ""
+        return " ".join(text.split())[:60]
+
+    def add_bookmark(self):
+        if self.reader.tf is None or self.reader.book is None:
+            return
+        book_id = int(self.reader.book["id"])
+        offset = self.reader.top_offset()
+
+        existing = self.library.find_bookmark_near(book_id, offset)
+        if existing:
+            self._load_bookmarks()
+            if not self._side_showing(self.bookmarks):
+                self.open_side(self.bookmarks)
+            self.bookmarks.highlight_offset(offset)
+            self.show_status("此处已有书签")
+            return
+
+        excerpt = self._bookmark_excerpt(offset)
+        chapter = self.reader.current_chapter_title() or ""
+        self.library.add_bookmark(book_id, offset, chapter, excerpt)
+        self._load_bookmarks()
+        if not self._side_showing(self.bookmarks):
+            self.open_side(self.bookmarks)
+        self.bookmarks.highlight_offset(offset)
+        self.show_status("已添加书签：%s" % (excerpt[:24] or "(空)"))
+
+    def _edit_bookmark(self, bookmark_id: int):
+        book = self.reader.book
+        if not book:
+            return
+        rows = self.library.list_bookmarks(int(book["id"]))
+        row = next((r for r in rows if int(r["id"]) == int(bookmark_id)), None)
+        if row is None:
+            return
+        from PySide6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getMultiLineText(
+            self, "编辑备注", "备注（可为空）：", row.get("note") or "")
+        if ok:
+            self.library.update_bookmark_note(int(bookmark_id), text)
+            self._load_bookmarks()
+
+    def _delete_bookmark(self, bookmark_id: int):
+        from PySide6.QtWidgets import QMessageBox
+        ans = QMessageBox.question(
+            self, "删除书签", "确定删除这个书签吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans == QMessageBox.StandardButton.Yes:
+            self.library.delete_bookmark(int(bookmark_id))
+            self._load_bookmarks()
+
+    def _on_bookmark_jump(self, offset: int):
+        if self.reader.tf is None:
+            return
+        self.reader.goto_offset(offset, align_line=True)
         self.reader.setFocus()
 
     # ------------------------------------------------------------ 设置
@@ -573,6 +666,14 @@ class MainWindow(QWidget):
         if ctrl and k == Qt.Key.Key_F:
             if in_reader:
                 self.toggle_search()
+            ev.accept()
+            return
+        if ctrl and k == Qt.Key.Key_B:
+            if in_reader:
+                if shift:
+                    self.toggle_bookmarks()
+                else:
+                    self.add_bookmark()
             ev.accept()
             return
         if ctrl and k == Qt.Key.Key_M:

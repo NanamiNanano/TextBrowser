@@ -202,6 +202,19 @@ class Library:
             (book_id,)).fetchall()
         return [dict(r) for r in rows]
 
+    def find_bookmark_near(self, book_id: int, offset: int, window: int = 400):
+        """同一位置附近是否已有书签（用于重复添加提示）。"""
+        row = self.conn.execute(
+            """SELECT * FROM bookmark WHERE book_id = ? AND ABS(offset - ?) <= ?
+                ORDER BY ABS(offset - ?) LIMIT 1""",
+            (book_id, offset, window, offset)).fetchone()
+        return dict(row) if row else None
+
+    def update_bookmark_note(self, bookmark_id: int, note: str) -> None:
+        self.conn.execute("UPDATE bookmark SET note = ? WHERE id = ?",
+                          (note, bookmark_id))
+        self.conn.commit()
+
     def delete_bookmark(self, bookmark_id: int) -> None:
         self.conn.execute("DELETE FROM bookmark WHERE id = ?", (bookmark_id,))
         self.conn.commit()

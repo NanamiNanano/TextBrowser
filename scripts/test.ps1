@@ -1,4 +1,4 @@
-# 跑全部自动测试
+﻿# 跑全部自动测试
 #
 # 用法: .\scripts\test.ps1 [-Verbose]
 
