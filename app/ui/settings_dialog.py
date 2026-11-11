@@ -302,6 +302,21 @@ class SettingsDialog(QWidget):
         row.addWidget(self.lbl_opacity)
         row.addStretch(1)
         lay.addLayout(row)
+
+        # ESC / 关闭按钮的行为。默认收进托盘；但 Windows 会把新托盘图标塞进
+        # 任务栏右下角的「^」溢出区，很多人按完 ESC 就找不到程序了，
+        # 所以给一个「最小化到任务栏」的选择。
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("ESC / 关闭时"))
+        self.cmb_esc = QComboBox()
+        self.cmb_esc.addItem("最小化到任务栏（推荐，任务栏留有图标）", "minimize")
+        self.cmb_esc.addItem("收进系统托盘（不占任务栏，依赖托盘图标可用）", "tray")
+        self.cmb_esc.setMinimumWidth(240)
+        self.cmb_esc.currentIndexChanged.connect(
+            lambda _i: self._set("window.escAction", self.cmb_esc.currentData()))
+        row2.addWidget(self.cmb_esc)
+        row2.addStretch(1)
+        lay.addLayout(row2)
         return box
 
     # ------------------------------------------------------------ 应用
@@ -365,6 +380,8 @@ class SettingsDialog(QWidget):
             idx = self.cmb_mode.findData(s.get("reading.mode"))
             self.cmb_mode.setCurrentIndex(max(0, idx))
             self.chk_footer.setChecked(bool(s.get("reading.showFooter", True)))
+            idx = self.cmb_esc.findData(s.get("window.escAction", "minimize"))
+            self.cmb_esc.setCurrentIndex(max(0, idx))
             op = int(round(float(s.get("window.opacity", 1.0)) * 100))
             self.sld_opacity.setValue(op)
             self.lbl_opacity.setText("%d%%" % op)

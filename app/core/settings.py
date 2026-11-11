@@ -36,6 +36,9 @@ DEFAULTS: Dict[str, Any] = {
         "w": 1120,
         "h": 780,
         "maximized": False,
+        # minimize = 最小化到任务栏（任务栏留有图标，一定找得回来）
+        # tray     = 收进系统托盘（更"干净"，但依赖托盘图标注册成功）
+        "escAction": "minimize",
     },
     "shortcuts": {
         "prevPage": "Q",

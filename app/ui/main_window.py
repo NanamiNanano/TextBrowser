@@ -240,7 +240,12 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------ 托盘
     def hide_to_tray(self):
-        """ESC / 关闭按钮 / 最小化按钮都走这里：收进托盘而不是退出。"""
+        """ESC / 关闭按钮 / 最小化按钮都走这里：默认收进托盘，而不是退出。
+
+        escAction 可切换为 minimize：此时最小化到任务栏、保留任务栏按钮。
+        之所以要这个选项——Windows 10/11 会把新出现的托盘图标收进 `^` 溢出区，
+        用户按 ESC 后看到窗口和任务栏图标一起消失，就找不到程序了。
+        """
         from PySide6.QtWidgets import QApplication
         # 保险：任何情况下都不允许「最后一个窗口隐藏 = 退出进程」。
         inst = QApplication.instance()
@@ -248,17 +253,25 @@ class MainWindow(QWidget):
             inst.setQuitOnLastWindowClosed(False)
 
         self._save_geometry()
-        if self.tray.isVisible() and self.tray.isSystemTrayAvailable():
-            self.hide()
-            if not self._tray_hint_shown:
-                self._tray_hint_shown = True
-                self.tray.notify(
-                    "已收进系统托盘，程序仍在后台运行。\n"
-                    "托盘图标可能被 Windows 收进了「^」溢出区，可拖到外面固定；\n"
-                    "再次双击启动图标也能把它叫回来。")
-        else:
-            # 没有托盘就退化成普通最小化，绝不隐藏到「看不见也找不回」的状态
-            self.showMinimized()
+
+        # 只有「托盘图标确实可用」时才允许隐藏窗口。实测过托盘图标注册失败
+        # 的情况（Qt 认为 isVisible 为真、但 Windows 通知区域里根本没有），
+        # 那时隐藏窗口 = 应用彻底失联，只能去任务管理器杀进程。
+        tray_ok = (self.tray.isVisible()
+                   and self.tray.isSystemTrayAvailable()
+                   and not self.tray.icon().isNull())
+
+        if self.settings.get("window.escAction", "minimize") == "minimize" or not tray_ok:
+            self.showMinimized()          # 任务栏保留图标，一定找得回来
+            return
+
+        self.hide()
+        if not self._tray_hint_shown:
+            self._tray_hint_shown = True
+            self.tray.notify(
+                "已收进系统托盘，程序仍在后台运行。\n"
+                "托盘图标可能被 Windows 收进任务栏右下角的「^」溢出区，\n"
+                "再次双击启动图标也能把窗口叫回来。")
 
     def show_from_tray(self):
         self.showNormal()

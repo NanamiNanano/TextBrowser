@@ -62,6 +62,12 @@ class FakeTray:
     def isSystemTrayAvailable(self):
         return True
 
+    def icon(self):
+        from PySide6.QtGui import QIcon, QPixmap
+        pm = QPixmap(16, 16)
+        pm.fill()
+        return QIcon(pm)
+
     def notify(self, text, title="x"):
         self.notified.append(text)
 
@@ -75,6 +81,18 @@ def make_window(enable_tray=False):
     app.processEvents()
     return win
 
+
+print("\n== 0. 默认行为 ==")
+
+
+def t_default_action():
+    from app.core.settings import DEFAULTS
+    msg = "默认应当最小化到任务栏（托盘图标不可靠会导致应用失联）"
+    assert DEFAULTS["window"]["escAction"] == "minimize", msg
+    return "默认 escAction = minimize"
+
+
+check("默认 ESC 行为", t_default_action)
 
 print("\n== 1. 无托盘时最小化，不退出 ==")
 
@@ -117,6 +135,7 @@ print("\n== 2. 有托盘时隐藏窗口，且不退出 ==")
 win2 = make_window(enable_tray=False)
 fake = FakeTray()
 win2.tray = fake                      # 用替身走「有托盘」分支
+win2.settings.set("window.escAction", "tray")
 
 
 def t_hide():
@@ -146,6 +165,39 @@ def t_show_back():
 check("有托盘时隐藏", t_hide)
 check("隐藏后不退出", t_hidden_not_quit)
 check("从托盘恢复", t_show_back)
+
+print("\n== 2b. ESC 行为可切换（托盘 / 任务栏）==")
+
+win3 = make_window(enable_tray=False)
+win3.tray = FakeTray()
+
+
+def t_esc_minimize_mode():
+    win3.settings.set("window.escAction", "minimize")
+    win3.showNormal()
+    app.processEvents()
+    win3.hide_to_tray()
+    app.processEvents()
+    assert win3.isMinimized(), "minimize 模式下应当最小化到任务栏"
+    return "最小化到任务栏"
+
+
+def t_esc_tray_mode():
+    win3.settings.set("window.escAction", "tray")
+    win3.showNormal()
+    app.processEvents()
+    win3.hide_to_tray()
+    app.processEvents()
+    assert not win3.isVisible(), "tray 模式下应当隐藏窗口"
+    win3.show_from_tray()
+    app.processEvents()
+    return "收进托盘"
+
+
+check("escAction=minimize 保留任务栏", t_esc_minimize_mode)
+check("escAction=tray 收进托盘", t_esc_tray_mode)
+win3._stop_worker()
+win3.hide()
 
 win2._stop_worker()
 win2.hide()
