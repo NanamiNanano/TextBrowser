@@ -240,14 +240,25 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------ 托盘
     def hide_to_tray(self):
+        """ESC / 关闭按钮 / 最小化按钮都走这里：收进托盘而不是退出。"""
+        from PySide6.QtWidgets import QApplication
+        # 保险：任何情况下都不允许「最后一个窗口隐藏 = 退出进程」。
+        inst = QApplication.instance()
+        if inst is not None:
+            inst.setQuitOnLastWindowClosed(False)
+
         self._save_geometry()
         if self.tray.isVisible() and self.tray.isSystemTrayAvailable():
             self.hide()
             if not self._tray_hint_shown:
                 self._tray_hint_shown = True
-                self.tray.notify("已最小化到托盘。双击托盘图标可恢复，托盘菜单里可退出。")
+                self.tray.notify(
+                    "已收进系统托盘，程序仍在后台运行。\n"
+                    "托盘图标可能被 Windows 收进了「^」溢出区，可拖到外面固定；\n"
+                    "再次双击启动图标也能把它叫回来。")
         else:
-            self.showMinimized()      # 没有托盘就退化成普通最小化
+            # 没有托盘就退化成普通最小化，绝不隐藏到「看不见也找不回」的状态
+            self.showMinimized()
 
     def show_from_tray(self):
         self.showNormal()

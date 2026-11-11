@@ -17,6 +17,7 @@ ERROR_ALREADY_EXISTS = 183
 ERROR_ACCESS_DENIED = 5
 SW_RESTORE = 9
 SW_SHOW = 5
+SW_SHOWNORMAL = 1
 SW_MINIMIZE = 6
 
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -104,13 +105,16 @@ def _owner_is_python(hwnd) -> bool:
 
 
 def _titles_matching(prefix: str):
-    """枚举可见窗口，返回「标题以 prefix 开头 且 属主是 Python」的窗口句柄。"""
+    """枚举窗口，返回「标题以 prefix 开头 且 属主是 Python」的句柄。
+
+    **不能只枚举可见窗口**：按 ESC 收进托盘后窗口是隐藏的（IsWindowVisible
+    为 False），只找可见窗口会让第二次双击找不到已有实例，进而开出第二个实例。
+    实测就是这么坏的：隐藏后再启动，activate 返回 False。
+    """
     me = os.getpid()
     out = []
 
     def _cb(hwnd, _lp):
-        if not _u32.IsWindowVisible(hwnd):
-            return True
         n = _u32.GetWindowTextLengthW(hwnd)
         if n <= 0:
             return True
@@ -133,7 +137,11 @@ def _titles_matching(prefix: str):
 
 
 def activate(prefix: str) -> bool:
-    """把已有的主窗口恢复并置前。找到并成功唤起返回 True。"""
+    """把已有的主窗口恢复并置前。找到并成功唤起返回 True。
+
+    要覆盖三种状态：最小化（IsIconic）、隐藏（收进托盘）、正常显示。
+    对隐藏窗口必须用 SW_SHOWNORMAL 或 SW_RESTORE，SW_SHOW 对某些状态不起作用。
+    """
     handles = _titles_matching(prefix)
     if not handles:
         return False
@@ -142,10 +150,10 @@ def activate(prefix: str) -> bool:
     if _u32.IsIconic(hwnd):
         _u32.ShowWindow(hwnd, SW_RESTORE)
     else:
-        _u32.ShowWindow(hwnd, SW_SHOW)
+        _u32.ShowWindow(hwnd, SW_SHOWNORMAL)
 
-    # SetForegroundWindow 受前台锁定限制，失败时把窗口提到顶层并闪任务栏按钮，
-    # 至少让用户看到窗口在哪。
+    # SetForegroundWindow 受前台锁定限制，失败时把窗口提到顶层并闪一下，
+    # 至少让用户能注意到。
     if not _u32.SetForegroundWindow(hwnd):
         try:
             _u32.BringWindowToTop(hwnd)
