@@ -42,28 +42,30 @@ Windows 桌面端 TXT / EPUB 阅读器。为**超大文本**与**长时间沉浸
 .\scripts\run.ps1 某本书.txt          # 打开指定文件
 ```
 
-双击入口：.\\文本浏览器.lnk（用 scripts\make_shortcut.ps1 生成）。
+双击入口：`.\文本浏览器.lnk`（用 `scripts\make_shortcut.ps1` 生成；打包版加 `-Packaged`）。
 
-> 执行策略若拦截 .ps1，改跑同目录的 .cmd（内部已带 -ExecutionPolicy Bypass）：un.cmd / 	est.cmd / uild.cmd。
+> 执行策略若拦截 `.ps1`，改跑同目录的 `.cmd`（内部已带 `-ExecutionPolicy Bypass`）：`run.cmd` / `test.cmd` / `build.cmd`。
 
 ## 快捷键
 
 | 键 | 功能 |
 | --- | --- |
-| `ESC` | 最小化到任务栏（默认）或收进托盘，可在设置里切换 |
-| `Q` / `E` | 上一页 / 下一页（滚动模式下为上一屏 / 下一屏；`←` `→` `PgUp` `PgDn` `空格` 同效） |
+| `E` / `→` / `PgDn` / `空格` | 下一页（滚动模式下是下一屏） |
+| `Q` / `←` / `PgUp` / `Shift+空格` | 上一页 / 上一屏 |
+| `ESC` | 收进系统托盘；托盘不可用时最小化到任务栏 |
 | `Ctrl+T` | 目录侧栏 |
 | `Ctrl+F` | 搜索侧栏 |
 | `Ctrl+B` | 在当前位置添加书签 |
 | `Ctrl+Shift+B` | 书签侧栏 |
 | `Ctrl+M` | 切换分页 / 滚动 |
 | `Ctrl+,` | 设置面板 |
-| `Ctrl+O` | 导入文件 |
-| `Ctrl+W` | 关闭文档回书架 |
-| `Ctrl+=` / `Ctrl+-` | 字号增减 |
+| `Ctrl+O` | 导入文件（TXT / EPUB） |
+| `Ctrl+W` | 关闭当前文档回书架 |
+| `+` / `=` | 字号增大（不需要 Ctrl） |
+| `-` | 字号减小 |
 | `F11` | 最大化 / 还原 |
 
-输入框聚焦时，所有单键快捷键（含 `ESC`）自动让位，不会被当成翻页。
+输入框聚焦时（搜索框、备注框等），所有单键快捷键（含 `ESC`）自动让位，不会被当成翻页。
 
 ## 打包
 
