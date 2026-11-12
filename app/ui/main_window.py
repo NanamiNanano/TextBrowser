@@ -312,6 +312,17 @@ class MainWindow(QWidget):
         import sys
 
         err = getattr(self, "_tray_error", None)
+        hint = ""
+        if err == 5:
+            hint = (
+                "\n\n错误码 5 = ERROR_ACCESS_DENIED（权限不足）。\n"
+                "Windows 不允许「与资源管理器权限级别不一致的进程」往托盘里加图标。\n"
+                "常见原因：\n"
+                "  · 从别的程序的「打开」按钮启动（继承了受限令牌）\n"
+                "  · 本程序以管理员身份运行，而资源管理器是普通权限（或反过来）\n"
+                "建议：关掉本程序，直接在「文件资源管理器」里双击 exe 再试一次。")
+        elif err in (1400, 1407):
+            hint = "\n\n错误码 %s = 窗口句柄无效，说明注册时机太早。" % err
         detail = [
             "系统托盘图标注册失败。",
             "",
@@ -328,7 +339,7 @@ class MainWindow(QWidget):
                     else os.path.dirname(os.path.dirname(os.path.dirname(
                         os.path.abspath(__file__)))))
             with open(os.path.join(base, "托盘诊断.txt"), "w", encoding="utf-8") as f:
-                f.write(text + "\n")
+                f.write(text + hint + "\n")
         except OSError:
             pass
 
@@ -337,7 +348,7 @@ class MainWindow(QWidget):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(
                 self, "托盘不可用",
-                text + "\n\n因此 ESC 只能最小化到任务栏（任务栏会保留图标），\n"
+                text + hint + "\n\n因此 ESC 只能最小化到任务栏（任务栏会保留图标），\n"
                        "关闭按钮可以正常退出程序。")
         except Exception:                   # noqa: BLE001
             pass
