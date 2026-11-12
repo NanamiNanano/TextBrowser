@@ -40,7 +40,11 @@ set TB_DEBUG_TRAYSHOT=1
 set PYTHONIOENCODING=utf-8
 echo ==== 诊断开始（把下面的内容整段复制发回即可）====
 "%~dp0TextBrowserDbg.exe" 2>&1 | more
-echo ==== 程序已结束 ====
+echo.
+echo ==== 程序已结束，以下是托盘诊断 ====
+if exist "%~dp0tray_diag.txt" type "%~dp0tray_diag.txt"
+echo.
+echo ==== 结束。请把上面全部内容复制发回 ====
 pause
 '@
 [IO.File]::WriteAllText((Join-Path $dist 'run_debug.cmd'), ($cmd -replace "`r?`n", "`r`n"),

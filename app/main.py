@@ -70,6 +70,7 @@ def _debug_hooks(win) -> None:
 
     if os.environ.get("TB_DEBUG_TRAYSHOT"):
         QTimer.singleShot(2500, lambda: diag.screenshot_tray("tray_area"))
+        QTimer.singleShot(2600, lambda: diag.probe_tray(int(win.winId())))
 
 def _install_excepthook() -> None:
     """把未捕获异常写进日志，而不是让进程静默消失。

@@ -60,6 +60,114 @@ def write(name: str, text: str) -> None:
         pass
 
 
+class NOTIFYICONDATAW(ctypes.Structure):
+    """NOTIFYICONDATAW（Vista 及以后）。64 位下 sizeof 应为 976。"""
+
+    _fields_ = [
+        ("cbSize", wt.DWORD),
+        ("hWnd", wt.HWND),
+        ("uID", wt.UINT),
+        ("uFlags", wt.UINT),
+        ("uCallbackMessage", wt.UINT),
+        ("hIcon", wt.HICON),
+        ("szTip", wt.WCHAR * 128),
+        ("dwState", wt.DWORD),
+        ("dwStateMask", wt.DWORD),
+        ("szInfo", wt.WCHAR * 256),
+        ("uVersion", wt.UINT),
+        ("szInfoTitle", wt.WCHAR * 64),
+        ("dwInfoFlags", wt.DWORD),
+        ("guidItem", ctypes.c_byte * 16),
+        ("hBalloonIcon", wt.HICON),
+    ]
+
+
+class NOTIFYICONIDENTIFIER(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wt.DWORD),
+        ("hWnd", wt.HWND),
+        ("uID", wt.UINT),
+        ("guidItem", ctypes.c_byte * 16),
+    ]
+
+
+def _icon_file() -> str:
+    rel = os.path.join("assets", "app.ico")
+    base = getattr(sys, "_MEIPASS", None)
+    if base and os.path.exists(os.path.join(base, rel)):
+        return os.path.join(base, rel)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(root, rel)
+
+
+def probe_tray(hwnd: int) -> None:
+    """向 Windows 直接注册一个探针图标，再查询它的位置。
+
+    Shell_NotifyIcon 的返回值 + Shell_NotifyIconGetRect 的结果是**客观的**：
+    能查到矩形就说明通知区域真的收下了这个图标；ERROR_NOT_FOUND 则说明没收。
+    这样就不需要人肉盯着任务栏看。
+    """
+    shell32 = ctypes.WinDLL("shell32")
+    u32 = ctypes.WinDLL("user32")
+    shell32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
+    shell32.Shell_NotifyIconW.restype = wt.BOOL
+    shell32.Shell_NotifyIconGetRect.argtypes = [
+        ctypes.POINTER(NOTIFYICONIDENTIFIER), ctypes.POINTER(wt.RECT)]
+    shell32.Shell_NotifyIconGetRect.restype = ctypes.c_long
+    u32.LoadImageW.restype = wt.HANDLE
+    u32.LoadImageW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, wt.UINT,
+                               ctypes.c_int, ctypes.c_int, wt.UINT]
+
+    write("tray_diag.txt", "== probe_tray ==")
+    write("tray_diag.txt", "sizeof(NOTIFYICONDATAW) = %d (期望 976)"
+          % ctypes.sizeof(NOTIFYICONDATAW))
+    write("tray_diag.txt", "sizeof(NOTIFYICONIDENTIFIER) = %d"
+          % ctypes.sizeof(NOTIFYICONIDENTIFIER))
+
+    ico = _icon_file()
+    write("tray_diag.txt", "icon 文件: %s 存在=%s" % (ico, os.path.exists(ico)))
+    IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+    hicon = u32.LoadImageW(None, ico, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+    write("tray_diag.txt", "LoadImage hicon=%s err=%d"
+          % (hicon, ctypes.get_last_error()))
+
+    NIM_ADD, NIM_DELETE = 0, 2
+    NIF_MESSAGE, NIF_ICON, NIF_TIP = 0x1, 0x2, 0x4
+    uid = 0x5A5A
+    data = NOTIFYICONDATAW()
+    data.cbSize = ctypes.sizeof(NOTIFYICONDATAW)
+    data.hWnd = hwnd
+    data.uID = uid
+    data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
+    data.uCallbackMessage = 0x8000 + 1
+    data.hIcon = hicon
+    data.szTip = "文本浏览器 探针"
+
+    ok = shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(data))
+    write("tray_diag.txt", "Shell_NotifyIcon(NIM_ADD) -> %s err=%d"
+          % (bool(ok), ctypes.get_last_error()))
+
+    if ok:
+        ident = NOTIFYICONIDENTIFIER()
+        ident.cbSize = ctypes.sizeof(NOTIFYICONIDENTIFIER)
+        ident.hWnd = hwnd
+        ident.uID = uid
+        rect = wt.RECT()
+        hr = shell32.Shell_NotifyIconGetRect(ctypes.byref(ident), ctypes.byref(rect))
+        # S_OK = 0；0x80070490 = ERROR_NOT_FOUND
+        write("tray_diag.txt", "Shell_NotifyIconGetRect -> hr=0x%08X rect=(%d,%d,%d,%d)"
+              % (hr & 0xFFFFFFFF, rect.left, rect.top, rect.right, rect.bottom))
+        if hr == 0:
+            from PySide6.QtGui import QGuiApplication
+            vis = QGuiApplication.primaryScreen().availableGeometry()
+            inside = (vis.left() <= rect.left and rect.right <= vis.right()
+                      and vis.top() <= rect.top and rect.bottom <= vis.bottom())
+            write("tray_diag.txt", "  -> 图标已注册；在屏幕可见区=%s（False 通常表示在 ^ 溢出区）"
+                  % inside)
+        shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(data))
+        write("tray_diag.txt", "探针已删除")
+
+
 def screenshot_tray(prefix: str = "tray_area") -> None:
     """把任务栏通知区域（含溢出区）截图存盘，用来肉眼确认图标在不在。"""
     from PySide6.QtGui import QGuiApplication
