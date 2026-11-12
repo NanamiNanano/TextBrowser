@@ -303,9 +303,44 @@ class MainWindow(QWidget):
             ok = self.tray.attach(self)
             if not ok:
                 self._tray_error = self.tray.last_error
-                self.show_status(
-                    "系统托盘注册失败（Win32 错误码 %s），已改用最小化模式"
-                    % self.tray.last_error)
+                self._report_tray_failure()
+
+    def _report_tray_failure(self):
+        """托盘注册失败时说清楚原因：弹窗 + 写文件（窗口标题会被书名覆盖，
+        不能指望用户在那里看到错误码）。"""
+        import os
+        import sys
+
+        err = getattr(self, "_tray_error", None)
+        detail = [
+            "系统托盘图标注册失败。",
+            "",
+            "Win32 错误码：%s" % err,
+            "Shell_NotifyIcon(NIM_ADD) 返回：False",
+            "窗口句柄：%s" % int(self.winId()),
+        ]
+        text = "\n".join(detail)
+
+        # 1) 写到程序目录，方便把文件发回来
+        try:
+            base = (os.path.dirname(os.path.abspath(sys.executable))
+                    if getattr(sys, "frozen", False)
+                    else os.path.dirname(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__)))))
+            with open(os.path.join(base, "托盘诊断.txt"), "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except OSError:
+            pass
+
+        # 2) 弹窗。没有托盘时 ESC 只会最小化，用户需要知道这一点
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "托盘不可用",
+                text + "\n\n因此 ESC 只能最小化到任务栏（任务栏会保留图标），\n"
+                       "关闭按钮可以正常退出程序。")
+        except Exception:                   # noqa: BLE001
+            pass
 
     def hide_to_tray(self):
         """ESC / 标题栏最小化按钮：收进托盘或最小化到任务栏（可配）。
