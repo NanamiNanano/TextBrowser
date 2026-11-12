@@ -18,6 +18,59 @@ INSTANCE_KEY = "TextBrowser-SingleInstance-v1"
 POLL_MS = 800
 
 
+def _install_qt_message_handler() -> None:
+    """把 Qt 自己的告警写进日志。
+
+    窗口模式下没有 stderr，像「QSystemTrayIcon: Failed to add icon」这种关键
+    告警会直接丢掉——打包版的托盘图标消失，就是因为看不到这类信息才拖了几轮。
+    """
+    from PySide6.QtCore import qInstallMessageHandler
+
+    log_dir = os.path.join(DATA_DIR, "logs")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError:
+        return
+    path = os.path.join(log_dir, "qt.log")
+
+    def handler(mode, context, message):
+        name = getattr(mode, "name", str(mode))
+        line = "[%s] %s" % (name, message)
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+        try:
+            if sys.stderr is not None:      # 控制台版能直接看到
+                sys.stderr.write(line + "\n")
+                sys.stderr.flush()
+        except Exception:                   # noqa: BLE001
+            pass
+
+    qInstallMessageHandler(handler)
+    _install_qt_message_handler.handler = handler      # 防 GC
+
+
+def _debug_hooks(win) -> None:
+    """排查托盘问题用的钩子，全部由环境变量开启，正常使用不产生任何文件。"""
+    from PySide6.QtCore import QTimer
+
+    from .core import diag
+
+    if os.environ.get("TB_DEBUG_ICON"):
+        try:
+            from .ui.theme import tray_icon
+            pm = tray_icon().pixmap(64, 64)
+            diag.write("tray_diag.txt", "icon 64px isNull=%s size=%dx%d save=%s"
+                       % (pm.isNull(), pm.width(), pm.height(),
+                          pm.save(diag.path("tray_icon_64.png"), "PNG")))
+        except Exception as e:              # noqa: BLE001
+            diag.write("tray_diag.txt", "icon dump 异常: %s" % e)
+
+    if os.environ.get("TB_DEBUG_TRAYSHOT"):
+        QTimer.singleShot(2500, lambda: diag.screenshot_tray("tray_area"))
+
 def _install_excepthook() -> None:
     """把未捕获异常写进日志，而不是让进程静默消失。
 
@@ -50,11 +103,45 @@ def _install_excepthook() -> None:
     sys.excepthook = hook
 
 
+def _log_tray_state(win) -> None:
+    """把托盘相关状态写进日志，用来对比「开发版正常、打包版没有图标」。"""
+    import json
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+
+    def dump(stage):
+        try:
+            tray = getattr(win, "tray", None)
+            info = {
+                "stage": stage,
+                "frozen": bool(getattr(sys, "frozen", False)),
+                "executable": sys.executable,
+                "platform": QApplication.platformName(),
+                "tray_available": QSystemTrayIcon.isSystemTrayAvailable(),
+                "supports_messages": QSystemTrayIcon.supportsMessages(),
+                "tray_is_visible": bool(tray.isVisible()) if tray else None,
+                "icon_is_null": tray.icon().isNull() if tray else None,
+                "icon_sizes": [[s.width(), s.height()] for s in tray.icon().availableSizes()]
+                if tray else None,
+                "tooltip": tray.toolTip() if tray else None,
+            }
+            path = os.path.join(DATA_DIR, "logs", "tray.log")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(info, ensure_ascii=False) + "\n")
+        except Exception:                       # noqa: BLE001
+            pass
+
+    dump("after_show")
+    QTimer.singleShot(1200, lambda: dump("after_1200ms"))
+
+
 def main(argv=None) -> int:
     argv = list(argv if argv is not None else sys.argv)
     files = [os.path.abspath(a) for a in argv[1:] if os.path.isfile(a)]
     debug = os.environ.get("TB_DEBUG_INSTANCE")
     _install_excepthook()
+    _install_qt_message_handler()
 
     # 已有实例：优先唤醒它；唤不到说明占着名字的是残留内核对象，换备用名字继续启动
     if not instance.acquire(INSTANCE_KEY):
@@ -89,6 +176,7 @@ def main(argv=None) -> int:
     win = MainWindow(settings, library)
     app.setStyleSheet(build_qss(settings))
     win.show()
+    _debug_hooks(win)
 
     # 退出前必须让后台识别线程收尾，否则 QThread 会在运行中被析构
     app.aboutToQuit.connect(win._stop_worker)

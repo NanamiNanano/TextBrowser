@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """主题：动态生成 QSS、封面与图标。"""
+import os
 import hashlib
 
 from PySide6.QtCore import QRectF, Qt
@@ -365,4 +366,16 @@ def tray_icon() -> QIcon:
         p.drawText(QRectF(0, 0, s, s), Qt.AlignmentFlag.AlignCenter, "文")
         p.end()
         icon.addPixmap(pm)
+        if s == 64 and os.environ.get("TB_DEBUG_ICON"):
+            # 排查「打包版托盘没有图标」用：把实际画出来的图标存盘看一眼
+            try:
+                from ..config import DATA_DIR
+                d = os.path.join(DATA_DIR, "logs")
+                os.makedirs(d, exist_ok=True)
+                ok = pm.save(os.path.join(d, "tray_64.png"), "PNG")
+                with open(os.path.join(d, "tray_debug.txt"), "a", encoding="utf-8") as fh:
+                    fh.write("size=%d isNull=%s saved=%s null_image=%s\n"
+                             % (s, pm.isNull(), ok, pm.toImage().isNull()))
+            except OSError:
+                pass
     return icon

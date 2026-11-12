@@ -239,6 +239,46 @@ def t_find_hidden_cross_process():
 
 check("隐藏窗口可被枚举并唤起", t_find_hidden_cross_process)
 
+
+
+print("\n== 4. 关闭按钮必须能真正退出 ==")
+
+win4 = make_window(enable_tray=False)
+
+
+def t_close_quits_without_tray():
+    """没有可用托盘时，点 ✕ 必须退出——否则用户除了任务管理器没法关掉程序。"""
+    called = []
+    orig = win4.quit_app
+    win4.quit_app = lambda: (called.append(1), orig())[1]
+    win4.show()
+    app.processEvents()
+    win4.close()
+    app.processEvents()
+    assert called, "无托盘时点 ✕ 没有触发退出（窗口只会被最小化/隐藏）"
+    return "✕ -> quit_app"
+
+
+def t_close_hides_with_tray():
+    win5 = make_window(enable_tray=False)
+    win5.tray = FakeTray()
+    win5.settings.set("window.escAction", "tray")
+    win5.show()
+    app.processEvents()
+    called = []
+    orig = win5.quit_app
+    win5.quit_app = lambda: (called.append(1), orig())[1]
+    win5.close()
+    app.processEvents()
+    ok = not called and not win5.isVisible()
+    win5.quit_app = orig
+    win5._stop_worker()
+    assert ok, "有托盘时 ✕ 应当收进托盘（不出退），实际 quit=%s" % bool(called)
+    return "✕ -> 收进托盘"
+
+
+check("无托盘 ✕ 退出", t_close_quits_without_tray)
+check("有托盘 ✕ 收起", t_close_hides_with_tray)
 win._stop_worker()
 win.hide()
 try:

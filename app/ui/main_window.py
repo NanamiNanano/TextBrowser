@@ -108,7 +108,7 @@ class MainWindow(QWidget):
         # 信号
         self.titlebar.sig_minimize.connect(self.hide_to_tray)
         self.titlebar.sig_maximize.connect(self.toggle_maximize)
-        self.titlebar.sig_close.connect(self.hide_to_tray)
+        self.titlebar.sig_close.connect(self.close)
         self.shelf.sig_open_book.connect(self.open_book)
         self.shelf.sig_status.connect(self.show_status)
         self.reader.sig_status.connect(self.show_status)
@@ -239,12 +239,21 @@ class MainWindow(QWidget):
         self._place_grips()
 
     # ------------------------------------------------------------ 托盘
-    def hide_to_tray(self):
-        """ESC / 关闭按钮 / 最小化按钮都走这里：默认收进托盘，而不是退出。
+    def _tray_usable(self) -> bool:
+        """托盘图标是否真的可用。不可用时绝不能把窗口藏起来。"""
+        try:
+            return (self.tray.isVisible()
+                    and self.tray.isSystemTrayAvailable()
+                    and not self.tray.icon().isNull())
+        except Exception:                       # noqa: BLE001
+            return False
 
-        escAction 可切换为 minimize：此时最小化到任务栏、保留任务栏按钮。
-        之所以要这个选项——Windows 10/11 会把新出现的托盘图标收进 `^` 溢出区，
-        用户按 ESC 后看到窗口和任务栏图标一起消失，就找不到程序了。
+    def hide_to_tray(self):
+        """ESC / 标题栏最小化按钮：收进托盘或最小化到任务栏（可配）。
+
+        注意：这里**不包括**关闭按钮。关闭按钮必须能真正退出程序——
+        之前把 ✕ 也接到这里，结果关闭按钮只会把窗口最小化，
+        用户除了任务管理器没有任何办法退出。
         """
         from PySide6.QtWidgets import QApplication
         # 保险：任何情况下都不允许「最后一个窗口隐藏 = 退出进程」。
@@ -254,14 +263,7 @@ class MainWindow(QWidget):
 
         self._save_geometry()
 
-        # 只有「托盘图标确实可用」时才允许隐藏窗口。实测过托盘图标注册失败
-        # 的情况（Qt 认为 isVisible 为真、但 Windows 通知区域里根本没有），
-        # 那时隐藏窗口 = 应用彻底失联，只能去任务管理器杀进程。
-        tray_ok = (self.tray.isVisible()
-                   and self.tray.isSystemTrayAvailable()
-                   and not self.tray.icon().isNull())
-
-        if self.settings.get("window.escAction", "minimize") == "minimize" or not tray_ok:
+        if self.settings.get("window.escAction", "minimize") == "minimize" or not self._tray_usable():
             self.showMinimized()          # 任务栏保留图标，一定找得回来
             return
 
@@ -760,6 +762,15 @@ class MainWindow(QWidget):
         self.show_status("字号 %d px" % new)
 
     def closeEvent(self, ev):
-        # 关闭按钮默认收起到托盘，真正退出走托盘菜单
-        ev.ignore()
-        self.hide_to_tray()
+        """关闭窗口：托盘可用才收进托盘，否则**真正退出**。
+
+        绝不能出现「点了 ✕ 程序还在后台、又没有任何入口」的状态——
+        用户只能去任务管理器杀进程，这是最糟的体验。
+        """
+        if self._tray_usable() and self.settings.get("window.escAction", "minimize") == "tray":
+            ev.ignore()
+            self._save_geometry()
+            self.hide()
+            return
+        ev.accept()
+        self.quit_app()
