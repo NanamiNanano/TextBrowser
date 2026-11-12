@@ -109,7 +109,9 @@ class _MsgFilter(QAbstractNativeEventFilter):
         try:
             if event_type == b"windows_generic_MSG" and self.tray._hwnd:
                 msg = ctypes.wintypes.MSG.from_address(int(message))
-                if msg.hwnd == self.tray._hwnd and msg.message == CALLBACK_MSG:
+                # 注意是 hWnd（大写 W）：ctypes.wintypes.MSG 的字段名如此，
+                # 写成 msg.hwnd 会抛 AttributeError，回调就永远收不到。
+                if msg.hWnd and int(msg.hWnd) == self.tray._hwnd and msg.message == CALLBACK_MSG:
                     ev = msg.lParam & 0xFFFF
                     self.tray._on_event(ev)
                     return True, 0

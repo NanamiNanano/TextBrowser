@@ -83,6 +83,22 @@ class Settings:
                 self.data = _deep_merge(DEFAULTS, json.load(f))
         except (OSError, ValueError):
             self.data = copy.deepcopy(DEFAULTS)
+        self._migrate()
+
+    # 配置结构版本。改过默认值且老默认值会被自动写进文件时，靠它做迁移——
+    # 否则「改默认值」对已经存过配置的用户完全无效。
+    SCHEMA = 2
+
+    def _migrate(self) -> None:
+        version = int(self.data.get("_schema", 1) or 1)
+        if version < 2:
+            # v1 时代 escAction 的默认值被写成 minimize（而且会被自动写盘），
+            # 那不是用户的选择，恢复成 auto：托盘可用就收进托盘。
+            window = self.data.setdefault("window", {})
+            if window.get("escAction") == "minimize":
+                window["escAction"] = "auto"
+            self.data["_schema"] = 2
+            self.save()
 
     def save(self) -> bool:
         tmp = self.path + ".tmp"

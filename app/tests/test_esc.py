@@ -286,5 +286,58 @@ try:
 except OSError:
     pass
 
+
+print("\n== 5. 托盘回调与配置迁移 ==")
+
+
+def t_tray_callback():
+    """托盘图标点击要能触发信号。
+
+    这里直接用 PostMessage 投递 WM_APP+1，不需要真的注册图标——
+    之前 msg.hwnd 写错成小写（ctypes 里是 hWnd），回调永远收不到。
+    """
+    import ctypes
+
+    win6 = make_window(enable_tray=True)
+    win6.tray.sig_menu.disconnect()          # 别在测试里弹真实菜单
+    hits = []
+    win6.tray.sig_show.connect(lambda: hits.append("show"))
+    win6.tray.sig_menu.connect(lambda pos: hits.append("menu"))
+
+    u = ctypes.WinDLL("user32")
+    u.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                               ctypes.c_size_t, ctypes.c_size_t]
+    hwnd = int(win6.winId())
+    for lp in (0x0202, 0x0205):              # 左键抬起 / 右键抬起
+        u.PostMessageW(hwnd, 0x8001, 1, lp)
+        app.processEvents()
+    ok = hits == ["show", "menu"]
+    win6._stop_worker()
+    assert ok, "托盘回调没收到，实际: %s" % hits
+    return "左键->show，右键->menu"
+
+
+def t_settings_migrate():
+    """老配置里被自动写入的 escAction=minimize 要迁移成 auto。"""
+    import json
+    import tempfile
+    from app.core.settings import Settings as S
+
+    d = tempfile.mkdtemp()
+    p = os.path.join(d, "s.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"window": {"escAction": "minimize"}}, f)
+    s = S(p)
+    assert s.get("window.escAction") == "auto", "迁移没生效：%s" % s.get("window.escAction")
+
+    # 迁移只做一次：用户之后手动选 minimize 必须保留
+    s.set("window.escAction", "minimize")
+    s.save()
+    assert S(p).get("window.escAction") == "minimize", "迁移把用户的选择覆盖了"
+    return "老配置 -> auto，手动选择保留"
+
+check("托盘左键右键回调", t_tray_callback)
+check("ESC 配置迁移", t_settings_migrate)
+
 print("\n===== 结果: %d 通过 / %d 失败 =====" % (passed, failed))
 sys.exit(0 if failed == 0 else 1)
