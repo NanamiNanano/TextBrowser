@@ -87,9 +87,9 @@ print("\n== 0. 默认行为 ==")
 
 def t_default_action():
     from app.core.settings import DEFAULTS
-    msg = "默认应当最小化到任务栏（托盘图标不可靠会导致应用失联）"
-    assert DEFAULTS["window"]["escAction"] == "minimize", msg
-    return "默认 escAction = minimize"
+    msg = "默认应当是 auto：托盘可用就收进托盘，不可用才最小化"
+    assert DEFAULTS["window"]["escAction"] == "auto", msg
+    return "默认 escAction = auto"
 
 
 check("默认 ESC 行为", t_default_action)

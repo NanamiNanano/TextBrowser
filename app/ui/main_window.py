@@ -18,13 +18,13 @@ from ..core.paginate import Page
 from ..core.settings import Settings
 from .bookshelf import BookshelfView
 from .bookmark_panel import BookmarkPanel
+from .tray_win32 import Win32Tray
 from .reader import ReaderView
 from .search_panel import SearchPanel
 from .theme import build_qss, ui_colors
 from .titlebar import TitleBar
 from .toc_panel import TocPanel
 from .toc_worker import ChapterWorker
-from .tray import Tray
 
 GRIP = 6
 CORNER = 14
@@ -98,12 +98,14 @@ class MainWindow(QWidget):
         content_lay.addWidget(self.side)
         root.addWidget(content, 1)
 
-        # 托盘
-        self.tray = Tray(lambda: self.library.list_books(), self)
+        # 托盘：用自己实现的 Win32 版本，add() 会返回明确的成功/失败，
+        # 这样「能不能隐藏窗口」才有依据（Qt 的版本会在打包版上静默失败）。
+        self.tray = Win32Tray(self)
         self.tray.sig_show.connect(self.show_from_tray)
         self.tray.sig_quit.connect(self.quit_app)
-        if enable_tray:
-            self.tray.show()
+        self.tray.sig_menu.connect(self._show_tray_menu)
+        self._enable_tray = enable_tray
+        self._tray_menu = self._build_tray_menu()
 
         # 信号
         self.titlebar.sig_minimize.connect(self.hide_to_tray)
@@ -242,11 +244,68 @@ class MainWindow(QWidget):
     def _tray_usable(self) -> bool:
         """托盘图标是否真的可用。不可用时绝不能把窗口藏起来。"""
         try:
-            return (self.tray.isVisible()
-                    and self.tray.isSystemTrayAvailable()
-                    and not self.tray.icon().isNull())
+            return bool(self.tray.isVisible())
         except Exception:                       # noqa: BLE001
             return False
+
+    # ------------------------------------------------------------ 托盘菜单
+    def _build_tray_menu(self):
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        act_show = QAction("显示主窗口", menu)
+        act_show.triggered.connect(self.show_from_tray)
+        menu.addAction(act_show)
+
+        self._menu_recent = menu.addMenu("最近阅读")
+        self._menu_recent.aboutToShow.connect(self._fill_recent_menu)
+
+        menu.addSeparator()
+        act_settings = QAction("偏好设置…", menu)
+        act_settings.triggered.connect(self.open_settings)
+        menu.addAction(act_settings)
+
+        menu.addSeparator()
+        act_quit = QAction("退出", menu)
+        act_quit.triggered.connect(self.quit_app)
+        menu.addAction(act_quit)
+        return menu
+
+    def _fill_recent_menu(self):
+        from PySide6.QtGui import QAction
+
+        self._menu_recent.clear()
+        books = self.library.list_books() or []
+        if not books:
+            act = QAction("（暂无记录）", self._menu_recent)
+            act.setEnabled(False)
+            self._menu_recent.addAction(act)
+            return
+        for b in books[:5]:
+            pct = b.get("percent") or 0.0
+            act = QAction("%s  —  %.1f%%" % (b["title"], pct), self._menu_recent)
+            act.triggered.connect(
+                lambda _=False, bid=int(b["id"]): self._open_from_tray(bid))
+            self._menu_recent.addAction(act)
+
+    def _open_from_tray(self, book_id: int):
+        self.show_from_tray()
+        self.open_book(book_id)
+
+    def _show_tray_menu(self, pos):
+        self._tray_menu.popup(pos)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # 托盘要 HWND 才能接收回调，所以等窗口真正显示后再注册。
+        if self._enable_tray and not self.tray.isVisible():
+            ok = self.tray.attach(self)
+            if not ok:
+                self._tray_error = self.tray.last_error
+                self.show_status(
+                    "系统托盘注册失败（Win32 错误码 %s），已改用最小化模式"
+                    % self.tray.last_error)
 
     def hide_to_tray(self):
         """ESC / 标题栏最小化按钮：收进托盘或最小化到任务栏（可配）。
@@ -263,8 +322,15 @@ class MainWindow(QWidget):
 
         self._save_geometry()
 
-        if self.settings.get("window.escAction", "minimize") == "minimize" or not self._tray_usable():
-            self.showMinimized()          # 任务栏保留图标，一定找得回来
+        # explorer 重启过的话图标会丢，这里给一次机会重新注册
+        if not self.tray.isVisible() and self._enable_tray:
+            self.tray.attach(self)
+
+        action = self.settings.get("window.escAction", "auto")
+        usable = self._tray_usable()
+        # auto：托盘真的注册成功才收进托盘，否则退化为最小化（任务栏一定有图标）
+        if action == "minimize" or (action == "auto" and not usable) or not usable:
+            self.showMinimized()
             return
 
         self.hide()
@@ -767,7 +833,7 @@ class MainWindow(QWidget):
         绝不能出现「点了 ✕ 程序还在后台、又没有任何入口」的状态——
         用户只能去任务管理器杀进程，这是最糟的体验。
         """
-        if self._tray_usable() and self.settings.get("window.escAction", "minimize") == "tray":
+        if self._tray_usable() and self.settings.get("window.escAction", "auto") in ("tray", "auto"):
             ev.ignore()
             self._save_geometry()
             self.hide()
