@@ -2,7 +2,7 @@
 
 Win32 错误码：5
 Shell_NotifyIcon(NIM_ADD) 返回：False
-窗口句柄：1776350
+窗口句柄：1776996
 
 错误码 5 = ERROR_ACCESS_DENIED（权限不足）。
 Windows 不允许「与资源管理器权限级别不一致的进程」往托盘里加图标。

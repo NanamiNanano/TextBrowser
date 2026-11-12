@@ -21,6 +21,7 @@ from .bookmark_panel import BookmarkPanel
 from .tray_win32 import Win32Tray
 from .reader import ReaderView
 from .search_panel import SearchPanel
+from .notice_bar import NoticeBar
 from .theme import bg_alpha, build_qss, ui_colors
 from .titlebar import TitleBar
 from .toc_panel import TocPanel
@@ -92,11 +93,21 @@ class MainWindow(QWidget):
         self.side.addWidget(self.bookmarks)
         self.side.setVisible(False)
         content = QWidget(self)
-        content_lay = QHBoxLayout(content)
+        content_lay = QVBoxLayout(content)
         content_lay.setContentsMargins(0, 0, 0, 0)
         content_lay.setSpacing(0)
-        content_lay.addWidget(self.stack, 1)
-        content_lay.addWidget(self.side)
+
+        # 提示条放在正文上方，不打断操作
+        self.notice = NoticeBar(content)
+        content_lay.addWidget(self.notice)
+
+        inner = QWidget(content)
+        inner_lay = QHBoxLayout(inner)
+        inner_lay.setContentsMargins(0, 0, 0, 0)
+        inner_lay.setSpacing(0)
+        inner_lay.addWidget(self.stack, 1)
+        inner_lay.addWidget(self.side)
+        content_lay.addWidget(inner, 1)
         root.addWidget(content, 1)
 
         # 托盘：用自己实现的 Win32 版本，add() 会返回明确的成功/失败，
@@ -407,15 +418,12 @@ class MainWindow(QWidget):
         except OSError:
             pass
 
-        # 2) 弹窗。没有托盘时 ESC 只会最小化，用户需要知道这一点
-        try:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                self, "托盘不可用",
-                text + hint + "\n\n因此 ESC 只能最小化到任务栏（任务栏会保留图标），\n"
-                       "关闭按钮可以正常退出程序。")
-        except Exception:                   # noqa: BLE001
-            pass
+        # 2) 窗口内提示条：不弹模态框，不打断阅读，几秒后自己消失
+        brief = "系统托盘不可用（错误码 %s），ESC 将最小化到任务栏" % err
+        if err == 5:
+            brief += "；权限不足，可尝试以管理员身份运行"
+        brief += "。关闭按钮可正常退出。"
+        self.notice.show_message(brief, 12000)
 
     def hide_to_tray(self):
         """ESC / 标题栏最小化按钮：收进托盘或最小化到任务栏（可配）。

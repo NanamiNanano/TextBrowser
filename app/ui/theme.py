@@ -85,6 +85,12 @@ def build_qss(s: Settings) -> str:
     # 免得文字所在的底板也跟着变淡。
     root_bg = qss_color(bg, bg_alpha(s))
 
+    # 提示条配色（琥珀色，明暗主题各一套）
+    if dark:
+        warn_bg, warn_border, warn_fg = "#3C3418", "#6E5C24", "#EAD79B"
+    else:
+        warn_bg, warn_border, warn_fg = "#FFF6DB", "#E6D08A", "#7A5B00"
+
     return f"""
     QWidget {{
         color: {fg};
@@ -92,6 +98,24 @@ def build_qss(s: Settings) -> str:
     }}
     QWidget#Root {{
         background: {root_bg};
+    }}
+    QFrame#NoticeBar {{
+        background: {warn_bg};
+        border-bottom: 1px solid {warn_border};
+    }}
+    QLabel#NoticeText {{
+        color: {warn_fg};
+        font-size: 12px;
+    }}
+    QPushButton#NoticeClose {{
+        background: transparent;
+        border: none;
+        color: {warn_fg};
+        font-size: 14px;
+        border-radius: 10px;
+    }}
+    QPushButton#NoticeClose:hover {{
+        background: {hover};
     }}
     QWidget#TitleBar {{
         background: transparent;

@@ -339,5 +339,38 @@ def t_settings_migrate():
 check("托盘左键右键回调", t_tray_callback)
 check("ESC 配置迁移", t_settings_migrate)
 
+
+def t_tray_failure_is_notice_not_modal():
+    """托盘注册失败时只能用窗口内提示条，不许弹模态框。
+
+    模态框会打断阅读、还得手动点掉——用户明确要求过不要。
+    """
+    import PySide6.QtWidgets as W
+
+    called = []
+    orig_warn = W.QMessageBox.warning
+    orig_info = W.QMessageBox.information
+    orig_crit = W.QMessageBox.critical
+    W.QMessageBox.warning = staticmethod(lambda *a, **k: called.append("warning"))
+    W.QMessageBox.information = staticmethod(lambda *a, **k: called.append("info"))
+    W.QMessageBox.critical = staticmethod(lambda *a, **k: called.append("critical"))
+    try:
+        w = make_window(enable_tray=True)
+        app.processEvents()
+        visible = w.notice.isVisible()
+        text = w.notice.lbl.text()
+        w._stop_worker()
+        w.hide()
+    finally:
+        W.QMessageBox.warning = orig_warn
+        W.QMessageBox.information = orig_info
+        W.QMessageBox.critical = orig_crit
+    assert not called, "托盘失败弹了模态框: %s" % called
+    assert visible and text, "提示条没显示"
+    return "提示条：%s" % text[:24]
+
+
+check("托盘失败不弹模态框", t_tray_failure_is_notice_not_modal)
+
 print("\n===== 结果: %d 通过 / %d 失败 =====" % (passed, failed))
 sys.exit(0 if failed == 0 else 1)
