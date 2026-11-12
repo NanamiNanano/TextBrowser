@@ -21,7 +21,7 @@ from .bookmark_panel import BookmarkPanel
 from .tray_win32 import Win32Tray
 from .reader import ReaderView
 from .search_panel import SearchPanel
-from .theme import build_qss, ui_colors
+from .theme import bg_alpha, build_qss, ui_colors
 from .titlebar import TitleBar
 from .toc_panel import TocPanel
 from .toc_worker import ChapterWorker
@@ -57,6 +57,7 @@ class MainWindow(QWidget):
         self.settings = settings
         self.library = library
         self._tray_hint_shown = False
+        self._opacity_hint_shown = False
         self.enable_tray = enable_tray
 
         self.setObjectName("Root")
@@ -115,6 +116,7 @@ class MainWindow(QWidget):
         self.shelf.sig_status.connect(self.show_status)
         self.reader.sig_status.connect(self.show_status)
         self.reader.sig_progress.connect(self._on_progress)
+        self.reader.sig_context_menu.connect(self._show_reader_menu)
         self.toc.sig_jump.connect(self._on_toc_jump)
         self.toc.sig_close.connect(self.close_side)
         self.search.sig_jump.connect(self._on_search_jump)
@@ -227,10 +229,27 @@ class MainWindow(QWidget):
         self.settings.save()
 
     def apply_opacity(self):
+        """背景透明度。
+
+        刻意不再用 setWindowOpacity——那会把文字一起弄淡。
+        这里只让背景（根窗口 / 正文底板）带 alpha，文字始终不透明，
+        见 theme.build_qss 与 ReaderView.paintEvent。
+        """
+        self.setWindowOpacity(1.0)
         try:
-            self.setWindowOpacity(float(self.settings.get("window.opacity", 1.0)))
+            alpha = bg_alpha(self.settings)
         except (TypeError, ValueError):
-            pass
+            alpha = 1.0
+        # 半透明需要窗口自己不清屏，否则底色仍是不透明的
+        want = alpha < 0.999
+        if self.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) != want:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, want)
+        self.update()
+        if alpha < 0.20 and not self._opacity_hint_shown:
+            self._opacity_hint_shown = True
+            self.show_status(
+                "背景不透明度 %.0f%%——太低会看不清界面，"
+                "可用托盘菜单「显示主窗口」或再次双击启动图标恢复" % (alpha * 100))
 
     def toggle_maximize(self):
         if self.isMaximized():
@@ -295,6 +314,51 @@ class MainWindow(QWidget):
 
     def _show_tray_menu(self, pos):
         self._tray_menu.popup(pos)
+
+    # ------------------------------------------------------------ 右键菜单
+    def _build_reader_menu(self):
+        """阅读区右键菜单：把最常用的功能集中到鼠标上。"""
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        act = menu.addAction("目录")
+        act.triggered.connect(self.toggle_toc)
+        act = menu.addAction("搜索")
+        act.triggered.connect(self.toggle_search)
+        act = menu.addAction("书签栏")
+        act.triggered.connect(self.toggle_bookmarks)
+        act = menu.addAction("在当前位置添加书签")
+        act.triggered.connect(self.add_bookmark)
+
+        menu.addSeparator()
+        act = menu.addAction("切换分页 / 滚动")
+        act.triggered.connect(self.toggle_reading_mode)
+        act = menu.addAction("偏好设置…")
+        act.triggered.connect(self.open_settings)
+
+        menu.addSeparator()
+        # 正文是自绘的，没有文本选中功能，所以复制的是整页文字
+        act = menu.addAction("复制本页文字")
+        act.setEnabled(self.reader.tf is not None)
+        act.triggered.connect(self._copy_page)
+
+        menu.addSeparator()
+        act = menu.addAction("回到书架")
+        act.triggered.connect(self.back_to_shelf)
+        return menu
+
+    def _copy_page(self):
+        from PySide6.QtWidgets import QApplication
+        text = (self.reader.page.text or "").strip()
+        if not text:
+            self.show_status("本页没有可复制的文字")
+            return
+        QApplication.clipboard().setText(text)
+        self.show_status("已复制本页 %d 字" % len(text))
+
+    def _show_reader_menu(self, pos):
+        self._build_reader_menu().exec(pos)
 
     def showEvent(self, ev):
         super().showEvent(ev)

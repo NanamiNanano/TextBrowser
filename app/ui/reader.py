@@ -12,23 +12,25 @@
 import time
 from bisect import bisect_left, bisect_right
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import QWidget
 
 from ..core.paginate import Layout, Page, Paginator
 from ..core.textfile import TextFile
-from .theme import mix
+from .theme import bg_alpha, mix
 
 FOOTER_H = 34
 SCROLL_CHUNK_SCREENS = 2.4      # 滚动模式一次排版多少屏
 SCROLL_STEP = 0.9               # Q/E 在滚动模式下一次移动多少屏
+WHEEL_STEP = 120                # 一格滚轮的 angleDelta 是 120，攒满才翻一页
 
 
 class ReaderView(QWidget):
     sig_progress = Signal(int, float)     # 字节偏移, 百分比
     sig_status = Signal(str)
     sig_closed = Signal()
+    sig_context_menu = Signal(QPoint)     # 右键：交给主窗口弹功能菜单
 
     def __init__(self, settings, library, parent=None):
         super().__init__(parent)
@@ -43,6 +45,7 @@ class ReaderView(QWidget):
         self.book = None
         self._history = []
         self._last_save = 0.0
+        self._wheel_acc = 0            # 滚轮累积量，攒满一格才翻页
         self._reset_page_stats()
 
         # 章节表：偏移数组供二分定位当前章节，标题数组按下标取
@@ -462,13 +465,37 @@ class ReaderView(QWidget):
     def wheelEvent(self, ev):
         if self.tf is None:
             return
+
+        dy = ev.angleDelta().y()
+        if not dy:
+            # 触摸板会走 pixelDelta，折算成等效滚动量
+            dy = ev.pixelDelta().y() * 4
+        if not dy:
+            super().wheelEvent(ev)
+            return
+
         if self.is_scroll_mode():
-            dy = ev.angleDelta().y()
-            if dy:
-                self.scroll_by(-dy * 0.55)
-                ev.accept()
-                return
-        super().wheelEvent(ev)
+            self.scroll_by(-dy * 0.55)
+            ev.accept()
+            return
+
+        # 分页模式：滚轮翻页。一格滚轮是 120，累积到一格才翻页，
+        # 触摸板的连续小量不会被当成狂翻。
+        self._wheel_acc += dy
+        if (self._wheel_acc > 0) != (dy > 0):
+            self._wheel_acc = dy            # 方向变了就重新累积
+        steps = int(abs(self._wheel_acc) // WHEEL_STEP)
+        if steps:
+            forward = self._wheel_acc < 0    # 向下滚 = 下一页
+            for _ in range(min(steps, 5)):   # 一次最多翻 5 页，防手滑
+                (self.next_page if forward else self.prev_page)()
+            self._wheel_acc -= (-1 if forward else 1) * steps * WHEEL_STEP
+        ev.accept()
+
+    def contextMenuEvent(self, ev):
+        # 交给主窗口弹功能菜单（右键：目录 / 搜索 / 书签 / 设置 / 回书架…）
+        self.sig_context_menu.emit(ev.globalPos())
+        ev.accept()
 
     # ------------------------------------------------------------ 跳转
     def goto_offset(self, offset: int, align_line: bool = False) -> None:
@@ -507,6 +534,10 @@ class ReaderView(QWidget):
 
         bg = QColor(self.settings.get("appearance.bgColor", "#F5EFE0"))
         fg = QColor(self.settings.get("appearance.textColor", "#2B2B2B"))
+        # 只让**背景**半透明，文字颜色保持完全不透明
+        alpha = bg_alpha(self.settings)
+        if alpha < 0.999:
+            bg.setAlphaF(alpha)
         p.fillRect(self.rect(), bg)
 
         if self.tf is None or self.pg is None:

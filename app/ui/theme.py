@@ -51,11 +51,39 @@ def ui_colors(s: Settings) -> dict:
     }
 
 
+def qss_color(color: str, alpha: float) -> str:
+    """把 #RRGGBB 变成带透明的 QSS 颜色。
+
+    只有**背景**用它；文字颜色始终不透明——这正是用户要的
+    「背景半透明、文字清晰」，而 setWindowOpacity 会把文字一起弄淡。
+    """
+    try:
+        a = max(0.0, min(1.0, float(alpha)))
+    except (TypeError, ValueError):
+        a = 1.0
+    if a >= 0.999:
+        return color
+    q = QColor(color)
+    if not q.isValid():
+        return color
+    return "rgba(%d,%d,%d,%d)" % (q.red(), q.green(), q.blue(), int(round(a * 255)))
+
+
+def bg_alpha(s: Settings) -> float:
+    try:
+        return max(0.0, min(1.0, float(s.get("appearance.bgOpacity", 1.0))))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def build_qss(s: Settings) -> str:
     c = ui_colors(s)
     bg, fg, dark = c["bg"], c["fg"], c["dark"]
     panel, hover, press = c["panel"], c["hover"], c["press"]
     border, muted, accent = c["border"], c["muted"], c["accent"]
+    # 根背景按 bgOpacity 变透明；其它控件（卡片、面板）保持不透明，
+    # 免得文字所在的底板也跟着变淡。
+    root_bg = qss_color(bg, bg_alpha(s))
 
     return f"""
     QWidget {{
@@ -63,7 +91,7 @@ def build_qss(s: Settings) -> str:
         font-family: "Microsoft YaHei";
     }}
     QWidget#Root {{
-        background: {bg};
+        background: {root_bg};
     }}
     QWidget#TitleBar {{
         background: transparent;

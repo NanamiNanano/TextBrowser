@@ -291,9 +291,10 @@ class SettingsDialog(QWidget):
     def _build_window(self):
         box, lay = self._group("窗口")
         row = QHBoxLayout()
-        row.addWidget(QLabel("窗口不透明度"))
+        row.addWidget(QLabel("背景不透明度"))
         self.sld_opacity = QSlider(Qt.Orientation.Horizontal)
-        self.sld_opacity.setRange(70, 100)
+        self.sld_opacity.setRange(0, 100)
+        self.sld_opacity.setToolTip("只让背景透明，文字始终不透明")
         self.sld_opacity.setFixedWidth(220)
         self.sld_opacity.valueChanged.connect(self._on_opacity)
         row.addWidget(self.sld_opacity)
@@ -340,9 +341,11 @@ class SettingsDialog(QWidget):
 
     def _on_opacity(self, value: int) -> None:
         self.lbl_opacity.setText("%d%%" % value)
+        # 低于这个值基本看不清界面，主窗口会给出一次提示
+        self.lbl_opacity.setStyleSheet("color:#C0392B;" if value < 20 else "")
         if self._loading:
             return
-        self._set("window.opacity", round(value / 100.0, 2))
+        self._set("appearance.bgOpacity", round(value / 100.0, 2))
 
     def _apply_preset(self, preset: dict) -> None:
         if self._loading:
@@ -383,7 +386,7 @@ class SettingsDialog(QWidget):
             self.chk_footer.setChecked(bool(s.get("reading.showFooter", True)))
             idx = self.cmb_esc.findData(s.get("window.escAction", "auto"))
             self.cmb_esc.setCurrentIndex(max(0, idx))
-            op = int(round(float(s.get("window.opacity", 1.0)) * 100))
+            op = int(round(float(s.get("appearance.bgOpacity", 1.0)) * 100))
             self.sld_opacity.setValue(op)
             self.lbl_opacity.setText("%d%%" % op)
             self._update_contrast()

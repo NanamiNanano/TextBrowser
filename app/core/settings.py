@@ -21,6 +21,8 @@ DEFAULTS: Dict[str, Any] = {
         "marginH": 48,
         "marginV": 36,
         "maxContentWidth": 780,
+        # 背景不透明度：只影响背景，文字始终不透明
+        "bgOpacity": 1.0,
     },
     "reading": {
         "mode": "paginate",
@@ -87,7 +89,7 @@ class Settings:
 
     # 配置结构版本。改过默认值且老默认值会被自动写进文件时，靠它做迁移——
     # 否则「改默认值」对已经存过配置的用户完全无效。
-    SCHEMA = 2
+    SCHEMA = 3
 
     def _migrate(self) -> None:
         version = int(self.data.get("_schema", 1) or 1)
@@ -98,6 +100,18 @@ class Settings:
             if window.get("escAction") == "minimize":
                 window["escAction"] = "auto"
             self.data["_schema"] = 2
+            version = 2
+        if version < 3:
+            # 旧版是「整窗半透明」（文字跟着变淡），改成「只有背景半透明」。
+            # 老值 window.opacity 直接搬过来，视觉上不至于突变。
+            old = self.data.get("window", {}).get("opacity")
+            appearance = self.data.setdefault("appearance", {})
+            try:
+                if old is not None and float(old) < 0.999:
+                    appearance["bgOpacity"] = max(0.0, min(1.0, float(old)))
+            except (TypeError, ValueError):
+                pass
+            self.data["_schema"] = 3
             self.save()
 
     def save(self) -> bool:
