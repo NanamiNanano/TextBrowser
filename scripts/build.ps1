@@ -58,7 +58,8 @@ $args = @(
     '--distpath', $tmpDist,
     '--workpath', (Join-Path $root 'build\pyi'),
     '--specpath', (Join-Path $root 'build'),
-    '--add-data', ((Join-Path $root 'assets') + ';assets')
+    '--add-data', ((Join-Path $root 'assets') + ';assets'),
+    '--version-file', (Join-Path $root 'scripts\version_info.txt')
 ) + $excludeArgs
 
 if ($OneFile) { $args += '--onefile' }
