@@ -25,6 +25,11 @@ spike/corpus/
 # ---- 本机生成的快捷方式（绝对路径，用 scripts/make_shortcut.ps1 重建）----
 *.lnk
 
+# ---- 运行时生成的诊断文件（排障产物，不入库）----
+托盘诊断.txt
+tray_diag.txt
+*_cache
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/
